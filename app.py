@@ -675,8 +675,9 @@ def api_facts_item(sid):
 
 @app.route("/api/sessions/<sid>/summary", methods=["POST"])
 def api_run_summary(sid):
-    """手动触发一次剧情总结。body: {"slice_rounds": int, "full": bool}。
-    full=True（重新总结）：忽略上次总结点与旧摘要，从全部历史重新生成并覆盖。"""
+    """手动触发一次剧情总结。body: {"slice_rounds": int, "full": bool, "text_only": bool}。
+    text_only=True：只重写整份摘要文本，不写切片实体、不推进进度（文本分页「重新总结」）。
+    full=True：忽略上次总结点与旧切片，从全部历史重新生成并全量重建切片。"""
     username = session["username"]
     data = request.get_json(force=True, silent=True) or {}
     api_key = str(data.get("api_key") or "").strip()
@@ -697,6 +698,7 @@ def api_run_summary(sid):
     result = memory_engine.run_summary(
         api_key, username, sid, stored["messages"],
         slice_rounds=slice_rounds, full=bool(data.get("full")),
+        text_only=bool(data.get("text_only")),
     )
     if not result["ok"]:
         return jsonify({"error": result.get("error", "总结失败")}), 502

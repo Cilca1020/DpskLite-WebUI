@@ -1233,15 +1233,13 @@ function bindMemorySummary() {
       if (!currentSessionId) return showToast("请先选择对话");
       const apiKey = loadApiKey();
       if (!apiKey) return showToast("请先在「参数」页填写 API Key");
-      // 全量重建会把手动编辑过的切片摘要一并重算
-      const hasEdited = (((MEMORY_STATE || {}).summary || {}).slices || []).some((x) => x.edited);
-      if (hasEdited && !confirm("重新总结将全量重建所有切片，手动编辑过的切片摘要会被覆盖，确定？")) return;
+      // 文本摘要独立重建：只重写整份摘要文本，不影响切片实体与自动总结进度
       runBtn.disabled = true;
       runBtn.textContent = "总结中…";
       try {
-        const r = await apiPost("/api/sessions/" + currentSessionId + "/summary", { api_key: apiKey, full: true });
+        const r = await apiPost("/api/sessions/" + currentSessionId + "/summary", { api_key: apiKey, text_only: true });
         if (r && r.error) return showToast(r.error || "总结失败");
-        showToast("摘要已重新生成");
+        showToast("文本摘要已重新生成");
         await loadMemoryPanel();
       } catch (_) {
         showToast("总结失败");

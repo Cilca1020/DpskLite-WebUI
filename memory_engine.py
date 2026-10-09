@@ -516,7 +516,7 @@ def merge_summary(api_key, old_summary, new_slices_text):
         return old
 
 
-def run_summary(api_key, username, sid, stored_msgs, slice_rounds=None, full=False):
+def run_summary(api_key, username, sid, stored_msgs, slice_rounds=None, full=False, text_only=False):
     """执行一次剧情总结：把对话切片，逐片总结为持久化切片实体（摘要按片存储）。
 
     切片实体化：切片在全量对话上计算（每片带绝对轮次范围 start/end_round），落袋后
@@ -530,6 +530,10 @@ def run_summary(api_key, username, sid, stored_msgs, slice_rounds=None, full=Fal
 
     full=True（重新总结）：忽略已有切片实体，把全部历史（含最后的开放尾段）从头
     切片总结并全量重建（手动编辑过的片文本会被覆盖，前端弹窗提示）。
+
+    text_only=True（文本摘要独立重建）：与切片分页完全解耦——按同样规则切片逐片
+    总结，但结果只在内存中拼接为整份文本，仅覆盖 summary.text；不写切片实体、
+    不推进 last_round，切片列表与自动总结进度不受影响。
 
     返回 {"ok": bool, "summary": str, "error": str}。
     slice_rounds: 切片宽度（每次调用喂给模型的轮数）；None 用配置默认。
@@ -583,6 +587,23 @@ def run_summary(api_key, username, sid, stored_msgs, slice_rounds=None, full=Fal
             r += 1
         m["_rid"] = r
     slices = _build_anchor_slices(chat, slice_n, max_seg)
+    # 文本摘要独立重建：只重写整份 text，与切片实体 / 自动总结进度完全解耦
+    if text_only:
+        parts = []
+        for s in slices:
+            t = summarize_slice(api_key, s["messages"])
+            if not t:
+                return {"ok": False, "error": "总结生成失败（LLM 不可用或返回空）"}
+            label = str(s.get("label") or "").strip()
+            parts.append(("【" + label + "】" if label else "") + t)
+        text = "\n".join(parts)
+        # 超长压缩：与切片路径同样把超限文本压成单段
+        if len(text) > config.SUMMARY_MAX_CHARS:
+            merged = merge_summary(api_key, "", text)
+            if merged:
+                text = merged
+        storage.set_session_summary(username, sid, text)
+        return {"ok": True, "summary": text}
     # 落袋集合：增量跳过最后的开放尾段；full 连尾段一起总结
     settled = slices if full else slices[:-1]
     if not settled:

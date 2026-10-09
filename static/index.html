@@ -338,21 +338,21 @@
               </label>
             </span>
           </h3>
-          <!-- 自动总结开关：卡片总开关的下一级；关闭时后台不自动总结，仅手动 -->
-          <div class="memory-sub-row">
-            <label class="memory-sub-switch" title="开启时每积累一个完整切片自动总结剧情；关闭后仅支持手动「重新总结」">
-              <span class="memory-sub-label">自动总结</span>
-              <input id="memorySummaryAutoSwitch" type="checkbox" checked />
-              <span class="switch-track"><span class="switch-thumb"></span></span>
-            </label>
-          </div>
-          <span class="param-hint memory-sub-hint">开启时每积累一个完整切片（切片轮数轮）自动总结剧情进展；关闭后仅支持「重新总结」和手动编辑。</span>
           <!-- 二选一分页：文本摘要（原功能）/ 切片摘要（只读） -->
           <div class="summary-tabs" id="memorySummaryTabs" role="tablist">
             <button id="summaryTabText" class="summary-tab active" type="button" role="tab">文本摘要</button>
             <button id="summaryTabSlice" class="summary-tab" type="button" role="tab">切片摘要</button>
           </div>
           <div id="summaryPageText">
+            <!-- 自动总结开关：仅作用于文本摘要分页的总结流程 -->
+            <div class="memory-sub-row">
+              <label class="memory-sub-switch" title="开启时每积累一个完整切片自动总结剧情；关闭后仅支持手动「重新总结」">
+                <span class="memory-sub-label">自动总结</span>
+                <input id="memorySummaryAutoSwitch" type="checkbox" checked />
+                <span class="switch-track"><span class="switch-thumb"></span></span>
+              </label>
+            </div>
+            <span class="param-hint memory-sub-hint">开启时每积累一个完整切片（切片轮数轮）自动总结剧情进展；关闭后仅支持「重新总结」和手动编辑。</span>
             <textarea id="memorySummaryText" class="memory-summary-text" rows="5" placeholder="暂无摘要。可直接编辑（失焦自动保存），或点击「重新总结」从全部历史生成。"></textarea>
             <div class="memory-summary-meta" id="memorySummaryMeta"></div>
             <div class="memory-actions">
