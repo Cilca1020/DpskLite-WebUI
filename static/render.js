@@ -275,6 +275,15 @@ async function addSceneBreak(row, msgIndex, existingLabel) {
     const old = document.querySelector('.scene-divider[data-index="' + msgIndex + '"]');
     if (old) old.remove();
     row.parentNode.insertBefore(buildSceneDivider(label, msgIndex), row);
+    // 同步锚点按钮状态：新打 = 高亮（编辑分场名称）
+    const ownRow = document.querySelector('.msg-row[data-msg-index="' + msgIndex + '"]');
+    if (ownRow) {
+      const btn = ownRow.querySelector(".scene-btn");
+      if (btn) {
+        btn.classList.add("active");
+        btn.title = "编辑分场名称";
+      }
+    }
     if (r.first_anchor && r.first_anchor.added) {
       showToast("已分场（首条消息已自动补开场锚点）");
     } else {
@@ -317,6 +326,15 @@ async function removeSceneBreak(msgIndex) {
     sceneAnchors = sceneAnchors.filter((i) => i !== msgIndex);
     const dv = document.querySelector('.scene-divider[data-index="' + msgIndex + '"]');
     if (dv) dv.remove();
+    // 同步锚点按钮状态：取消高亮，恢复「在此分场」提示
+    const row = document.querySelector('.msg-row[data-msg-index="' + msgIndex + '"]');
+    if (row) {
+      const btn = row.querySelector(".scene-btn");
+      if (btn) {
+        btn.classList.remove("active");
+        btn.title = "在此分场（场景锚点，用于剧情总结分段）";
+      }
+    }
     showToast("已删除分场");
   } catch (_) {
     showToast("删除失败");
