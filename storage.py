@@ -204,17 +204,63 @@ def _parse_memory(raw):
     return mem
 
 
+def _parse_summary_slices(raw):
+    """规范化切片实体列表：[{id, name, text, start_round, end_round, edited, ts}]。
+
+    start_round / end_round 为对话轮次（1-based，含两端）；非法条目跳过。
+    """
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for i, s in enumerate(raw):
+        if not isinstance(s, dict):
+            continue
+        try:
+            start = max(1, int(s.get("start_round") or 0))
+            end = max(start, int(s.get("end_round") or 0))
+        except (TypeError, ValueError):
+            continue
+        out.append({
+            "id": str(s.get("id") or f"s{i + 1}_{int(time.time() * 1000)}"),
+            "name": str(s.get("name") or "").strip()[:50],
+            "text": str(s.get("text") or "").strip(),
+            "start_round": start,
+            "end_round": end,
+            "edited": bool(s.get("edited")),
+            "ts": float(s.get("ts") or time.time()),
+        })
+    return out
+
+
+def _summary_slices_text(slices):
+    """把切片实体列表拼接成整份摘要文本：一片一行，有名字的片加【场景名】前缀。"""
+    lines = []
+    for s in slices or []:
+        t = str(s.get("text") or "").strip()
+        if not t:
+            continue
+        name = str(s.get("name") or "").strip()
+        lines.append(f"【{name}】{t}" if name else t)
+    return "\n".join(lines)
+
+
 def _parse_summary(s):
     """规范化剧情摘要结构。接收 dict 或 None；缺省返回带默认配置的结构。
 
-    结构：{text, summarized_ts, last_round, slice_rounds}
+    结构：{text, summarized_ts, last_round, slice_rounds, slices}
     slice_rounds 为用户可设置的切片宽度；自动总结以切片为单位（每积累一个完整切片触发一次）。
+    slices 为持久化切片实体列表（落袋切片，按剧情顺序）：每片
+    {id, name, text, start_round, end_round, edited, ts}；
+    text 为派生字段（由各片拼接生成，见 _summary_slices_text），旧会话无 slices 时
+    保留整份 text 直接注入，不强制迁移。
     """
     default = {
         "text": "",
         "summarized_ts": None,
         "last_round": 0,
         "slice_rounds": config.SUMMARY_SLICE_ROUNDS,
+        "max_slice_rounds": config.SUMMARY_MAX_SEGMENT_ROUNDS,  # 锚点段保留上限（轮）
+        "slices": [],     # 持久化切片实体（落袋切片）
         "enabled": True,  # ③ 剧情摘要开关（关闭时保留内容但停止注入/自动/手动总结）
         "auto": True,     # ③ 自动总结开关（总开关下一级；关闭时后台不自动总结，仅手动）
     }
@@ -224,6 +270,7 @@ def _parse_summary(s):
     out["text"] = str(s.get("text") or "").strip()
     out["enabled"] = bool(s.get("enabled", True))
     out["auto"] = bool(s.get("auto", True))
+    out["slices"] = _parse_summary_slices(s.get("slices"))
     try:
         out["summarized_ts"] = float(s["summarized_ts"]) if s.get("summarized_ts") is not None else None
     except (TypeError, ValueError):
@@ -236,6 +283,12 @@ def _parse_summary(s):
     try:
         v = int(s.get("slice_rounds"))
         out["slice_rounds"] = max(1, min(v, 200))
+    except (TypeError, ValueError):
+        pass  # 保留默认
+    # 锚点段保留上限：>=1，上限给个安全值
+    try:
+        v = int(s.get("max_slice_rounds"))
+        out["max_slice_rounds"] = max(1, min(v, 200))
     except (TypeError, ValueError):
         pass  # 保留默认
     return out
@@ -649,30 +702,77 @@ def set_session_facts(username, sid, facts, last_round=None):
 
 
 def set_session_summary(username, sid, text, last_round=None):
-    """写入剧情摘要。text 为空则清除。last_round 为已总结到的对话轮次（计数）。
-    保留已有的用户配置（slice_rounds）。返回新 memory 或 None。"""
+    """写入剧情摘要整份文本。text 为空则清除（含切片实体）。last_round 为已总结到的轮次。
+
+    保留已有的用户配置与切片实体（text 由切片派生时，直接写 text 属于临时覆盖，
+    下次切片保存会重新派生覆盖）。返回新 memory 或 None。"""
     memory = get_session_memory(username, sid)
     if memory is None:
         return None
     text = (text or "").strip()
     old = memory.get("summary") or {}
     if text:
-        memory["summary"] = {
-            "text": text,
-            "summarized_ts": time.time(),
-            "last_round": last_round if last_round is not None else old.get("last_round", 0),
-            "slice_rounds": old.get("slice_rounds"),
-            "enabled": old.get("enabled", True),
-            "auto": old.get("auto", True),
-        }
+        s = _parse_summary(old)
+        s["text"] = text
+        s["summarized_ts"] = time.time()
+        if last_round is not None:
+            s["last_round"] = max(0, int(last_round))
+        memory["summary"] = s
     else:
         memory["summary"] = None
     save_session_memory(username, sid, memory)
     return memory
 
 
-def set_session_summary_config(username, sid, slice_rounds=None, enabled=None):
-    """设置会话剧情摘要的触发参数（slice_rounds 切片宽度 / enabled 开关）。
+def set_session_summary_slices(username, sid, slices, last_round=None):
+    """全量覆盖持久化切片实体列表，并把整份 text 重派生为各片拼接。
+
+    slices 为 [{id, name, text, start_round, end_round, edited, ts}]（非法条目跳过）；
+    last_round 为已处理到的轮次（None 不更新）。返回新 memory 或 None。
+    """
+    memory = get_session_memory(username, sid)
+    if memory is None:
+        return None
+    old = memory.get("summary") or {}
+    s = _parse_summary(old)
+    s["slices"] = _parse_summary_slices(slices)
+    s["text"] = _summary_slices_text(s["slices"])
+    s["summarized_ts"] = time.time()
+    if last_round is not None:
+        s["last_round"] = max(0, int(last_round))
+    memory["summary"] = s
+    save_session_memory(username, sid, memory)
+    return memory
+
+
+def update_summary_slice(username, sid, slice_id, name=None, text=None):
+    """更新单个切片实体的名称或摘要（面板编辑入口）。
+
+    任一字段更新后该片标记 edited=True，且整份 text 重派生。
+    name/text 传 None 表示不更新该项。返回 {"memory", "slice"} 或 None（会话/切片不存在）。
+    """
+    memory = get_session_memory(username, sid)
+    if memory is None:
+        return None
+    s = _parse_summary(memory.get("summary") or {})
+    target = next((x for x in s["slices"] if x["id"] == str(slice_id)), None)
+    if target is None:
+        return None
+    if name is not None:
+        target["name"] = str(name).strip()[:50]
+        target["edited"] = True
+    if text is not None:
+        target["text"] = str(text).strip()
+        target["edited"] = True
+    target["ts"] = time.time()
+    s["text"] = _summary_slices_text(s["slices"])
+    memory["summary"] = s
+    save_session_memory(username, sid, memory)
+    return {"memory": memory, "slice": target}
+
+
+def set_session_summary_config(username, sid, slice_rounds=None, enabled=None, max_slice_rounds=None):
+    """设置会话剧情摘要的触发参数（slice_rounds 切片宽度 / enabled 开关 / max_slice_rounds 锚点段上限）。
 
     只更新传入的参数，其余保留。返回新 memory 或 None（会话不存在）。
     """
@@ -685,6 +785,13 @@ def set_session_summary_config(username, sid, slice_rounds=None, enabled=None):
         try:
             s = dict(s)
             s["slice_rounds"] = max(1, min(int(slice_rounds), 200))
+            changed = True
+        except (TypeError, ValueError):
+            pass
+    if max_slice_rounds is not None:
+        try:
+            s = dict(s)
+            s["max_slice_rounds"] = max(1, min(int(max_slice_rounds), 200))
             changed = True
         except (TypeError, ValueError):
             pass
@@ -735,6 +842,7 @@ def set_session_memory_switches(username, sid, facts_enabled=None, summary_enabl
         memory["facts_max_per_slice"] = config.FACT_MAX_PER_SLICE  # 每片抽取上限恢复默认
         s = dict(memory.get("summary") or {})
         s["slice_rounds"] = config.SUMMARY_SLICE_ROUNDS
+        s["max_slice_rounds"] = config.SUMMARY_MAX_SEGMENT_ROUNDS
         memory["summary"] = _parse_summary(s)
         vec = dict(memory.get("vector") or _parse_vm(None))
         vec["top_k"] = None          # 恢复默认召回
@@ -913,6 +1021,68 @@ def delete_message(username, sid, index):
     session["updated_at"] = time.time()
     _save_session(username, session)
     return session
+
+
+def set_message_scene_break(username, sid, index, scene_break, scene_label=None):
+    """设置 / 清除指定 user 消息上的场景锚点（手动分场标记）。
+
+    index 为 user/assistant 消息下标（不含 system，与 delete_message 一致）。
+    scene_break=True 打锚点（scene_label 可空，空则前端显示默认「第 N 场」）；
+    scene_break=False 清除锚点。锚点只允许打在 user 消息（轮首）上。
+    返回更新后的消息 dict；会话不存在 / 下标越界 / 非 user 消息返回 None。
+    """
+    session = get_session(username, sid)
+    if session is None:
+        return None
+    indices = [i for i, message in enumerate(session["messages"]) if message.get("role") != "system"]
+    if index < 0 or index >= len(indices):
+        return None
+    message = session["messages"][indices[index]]
+    if message.get("role") != "user":
+        return None
+    if scene_break:
+        message["scene_break"] = True
+        label = str(scene_label or "").strip()
+        if label:
+            message["scene_label"] = label[:50]
+        else:
+            message.pop("scene_label", None)
+    else:
+        message.pop("scene_break", None)
+        message.pop("scene_label", None)
+    session["updated_at"] = time.time()
+    _save_session(username, session)
+    return message
+
+
+def rename_scene_anchor(username, sid, round_no, label):
+    """按轮次更新锚点消息的场景标签（切片面板改名 → 分割线同步）。
+
+    round_no 为对话轮次（1-based）：定位第 round_no 轮的 user 消息；
+    该消息带锚点时更新 scene_label（空串删除标签），未带锚点则不动（返回 ok 但 changed=False）。
+    返回 {"ok": bool, "changed": bool}；会话不存在 / 轮次越界返回 None。
+    """
+    session = get_session(username, sid)
+    if session is None:
+        return None
+    seen = 0
+    for message in session["messages"]:
+        if message.get("role") == "system":
+            continue
+        if message.get("role") == "user":
+            seen += 1
+            if seen == round_no:
+                if not message.get("scene_break"):
+                    return {"ok": True, "changed": False}
+                label = str(label or "").strip()
+                if label:
+                    message["scene_label"] = label[:50]
+                else:
+                    message.pop("scene_label", None)
+                session["updated_at"] = time.time()
+                _save_session(username, session)
+                return {"ok": True, "changed": True}
+    return None
 
 
 def append_message(username, sid, role, content, reasoning=None, files=None, interrupted=None):

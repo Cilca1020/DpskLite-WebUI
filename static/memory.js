@@ -22,6 +22,7 @@ function resetMemoryPanel() {
   MEMORY_STATE = null;
   MEMORY_CARD_SELECTED = null;
   MEMORY_WORLD_SELECTED = null;
+  MEMORY_SLICE_OPEN = null;
   const empty = memEl("memoryEmptyHint");
   if (empty) empty.classList.remove("hidden");
   const bar = memEl("memoryMasterBar");
@@ -94,14 +95,23 @@ function renderMemoryPanel() {
   const meta = memEl("memorySummaryMeta");
   if (meta) {
     const last = summary.last_round;
+    const sliceCount = Array.isArray(summary.slices) ? summary.slices.length : 0;
     meta.textContent = (last
-      ? "已总结至第 " + last + " 轮" + (summary.slice_rounds ? "（切片 " + summary.slice_rounds + " 轮）" : "")
+      ? "已总结至第 " + last + " 轮" + (summary.slice_rounds ? "（切片 " + summary.slice_rounds + " 轮）" : "") + (sliceCount ? " · " + sliceCount + " 个切片" : "")
       : "尚未总结");
   }
   const sliceInput = memEl("memorySummarySlice");
   if (sliceInput && summary.slice_rounds !== undefined && summary.slice_rounds !== null) {
     sliceInput.value = summary.slice_rounds;
   }
+  const maxSliceInput = memEl("memorySummaryMaxSlice");
+  if (maxSliceInput) {
+    maxSliceInput.value = (summary.max_slice_rounds !== undefined && summary.max_slice_rounds !== null)
+      ? summary.max_slice_rounds
+      : 24;
+  }
+  // 切片管理面板（持久化切片实体列表；无实体时隐藏）
+  renderSummarySlices(summary);
 
   // ④ 向量记忆：模型/开关/N 由 applyVmToUI 管理，这里同步 top_k 输入框
   const vec = mem.vector || {};
@@ -154,6 +164,8 @@ function refreshMemoryCardStates() {
   if (summaryAutoSwitch) summaryAutoSwitch.checked = summaryAutoOn;
   const summarySlice = memEl("memorySummarySlice");
   if (summarySlice) summarySlice.disabled = !summaryAutoOn;
+  const summaryMaxSlice = memEl("memorySummaryMaxSlice");
+  if (summaryMaxSlice) summaryMaxSlice.disabled = !summaryAutoOn;
 
   // ④ 向量记忆：开关由 main.js / chat.js（vmEnabled）管理，这里按可见开关态同步置灰与 top_k 禁用态
   const vectorSwitch = memEl("vmEnabled");
@@ -162,6 +174,224 @@ function refreshMemoryCardStates() {
   if (vectorGroup) vectorGroup.classList.toggle("memory-off", !vecEnabled);
   syncMemoryVectorField();
 }
+
+/* ---------------- ③ 切片管理面板 ---------------- */
+
+// 切片面板本地状态：当前展开的切片 id
+let MEMORY_SLICE_OPEN = null;
+
+// 渲染持久化切片列表（summary.slices）。每片：折叠头（名称 + 轮次范围）+
+// 展开体（场景名输入 / 本片摘要 textarea / 本片对话内容，均为失焦自动保存）。
+function renderSummarySlices(summary) {
+  const list = memEl("memorySliceList");
+  if (!list) return;
+  const slices = Array.isArray(summary.slices) ? summary.slices : [];
+  if (!slices.length) {
+    list.classList.remove("hidden");
+    list.innerHTML = "";
+    const empty = document.createElement("p");
+    empty.className = "memory-empty-text";
+    empty.textContent = "暂无切片：剧情总结落袋后这里会出现切片列表。打分场锚点并点「重新总结」可立即生成。";
+    list.appendChild(empty);
+    return;
+  }
+  list.innerHTML = "";
+  slices.forEach((sl, i) => {
+    const isOpen = MEMORY_SLICE_OPEN === sl.id;
+    const item = document.createElement("div");
+    item.className = "memory-slice-item" + (isOpen ? " open" : "");
+    item.dataset.id = sl.id;
+
+    const head = document.createElement("div");
+    head.className = "memory-slice-head";
+    head.title = "点击展开 / 收起";
+    const name = document.createElement("span");
+    name.className = "memory-slice-name";
+    name.textContent = sl.name || ("第" + (i + 1) + "片");
+    const range = document.createElement("span");
+    range.className = "memory-slice-range";
+    range.textContent = "第" + sl.start_round + "–" + sl.end_round + "轮" + (sl.edited ? " · 已编辑" : "");
+    head.appendChild(name);
+    head.appendChild(range);
+    head.addEventListener("click", () => toggleSliceItem(sl.id));
+    item.appendChild(head);
+
+    const body = document.createElement("div");
+    body.className = "memory-slice-body" + (isOpen ? "" : " hidden");
+    const nameField = document.createElement("label");
+    nameField.className = "memory-slice-field";
+    const nameSpan = document.createElement("span");
+    nameSpan.textContent = "场景名";
+    const nameInput = document.createElement("input");
+    nameInput.type = "text";
+    nameInput.value = sl.name || "";
+    nameInput.placeholder = "留空 = 第N片；改名同步消息分割线";
+    nameInput.addEventListener("change", () => {
+      const v = (nameInput.value || "").trim();
+      if (v === (sl.name || "")) return;
+      saveSliceField(sl, { name: v });
+    });
+    nameField.appendChild(nameSpan);
+    nameField.appendChild(nameInput);
+
+    const textField = document.createElement("label");
+    textField.className = "memory-slice-field";
+    const textSpan = document.createElement("span");
+    textSpan.textContent = "本片摘要";
+    const textArea = document.createElement("textarea");
+    textArea.rows = 3;
+    textArea.value = sl.text || "";
+    textArea.placeholder = "本切片的剧情摘要（失焦自动保存）";
+    textArea.addEventListener("change", () => {
+      const v = (textArea.value || "").trim();
+      if (v === (sl.text || "")) return;
+      saveSliceField(sl, { text: v });
+    });
+    textField.appendChild(textSpan);
+    textField.appendChild(textArea);
+
+    const msgsBox = document.createElement("div");
+    msgsBox.className = "memory-slice-msgs";
+    msgsBox.dataset.loaded = "0";
+    msgsBox.textContent = "（对话内容加载中…）";
+
+    body.appendChild(nameField);
+    body.appendChild(textField);
+    body.appendChild(msgsBox);
+    item.appendChild(body);
+    list.appendChild(item);
+    if (isOpen) loadSliceMessages(sl.id, msgsBox);
+  });
+}
+
+// 展开 / 收起某个切片；首次展开时懒加载该片的对话内容
+async function toggleSliceItem(sliceId) {
+  const item = document.querySelector('#memorySliceList .memory-slice-item[data-id="' + sliceId + '"]');
+  if (!item) return;
+  const body = item.querySelector(".memory-slice-body");
+  const opening = body.classList.contains("hidden");
+  MEMORY_SLICE_OPEN = opening ? sliceId : null;
+  document.querySelectorAll("#memorySliceList .memory-slice-item").forEach((el) => {
+    el.classList.remove("open");
+    const b = el.querySelector(".memory-slice-body");
+    if (b) b.classList.add("hidden");
+  });
+  if (opening) {
+    item.classList.add("open");
+    body.classList.remove("hidden");
+    const box = body.querySelector(".memory-slice-msgs");
+    if (box && box.dataset.loaded === "0") await loadSliceMessages(sliceId, box);
+  }
+}
+
+// 拉取会话消息并渲染该片轮次范围内的对话内容（长文本截断展示）
+async function loadSliceMessages(sliceId, box) {
+  const slices = ((MEMORY_STATE || {}).summary || {}).slices || [];
+  const sl = slices.find((x) => x.id === sliceId);
+  if (!sl) return;
+  box.dataset.loaded = "1";
+  try {
+    const s = await apiGet("/api/sessions/" + currentSessionId);
+    if (!s || s.error) { box.textContent = "（读取对话失败）"; return; }
+    const all = (s.messages || []).filter((m) => m.role !== "system");
+    const out = [];
+    let seen = 0;
+    for (const m of all) {
+      if (m.role === "user") {
+        seen++;
+        if (seen > sl.end_round) break;
+      }
+      if (seen >= sl.start_round && seen <= sl.end_round) out.push(m);
+    }
+    box.textContent = "";
+    if (!out.length) {
+      box.textContent = "（未找到对应轮次的消息，可能已被删除）";
+      return;
+    }
+    out.forEach((m) => {
+      const row = document.createElement("div");
+      row.className = "memory-slice-msg " + m.role;
+      const who = document.createElement("span");
+      who.className = "memory-slice-msg-role";
+      who.textContent = m.role === "user" ? "用户" : "AI";
+      const txt = document.createElement("span");
+      txt.className = "memory-slice-msg-text";
+      const c = m.content || "";
+      txt.textContent = c.length > 300 ? c.slice(0, 300) + "…" : c;
+      txt.title = c;
+      row.appendChild(who);
+      row.appendChild(txt);
+      box.appendChild(row);
+    });
+  } catch (_) {
+    box.textContent = "（读取对话失败）";
+  }
+}
+
+// 保存单片编辑（名称 / 摘要）。改名后同步前端分割线文本（就地，不重绘会话）。
+async function saveSliceField(sl, patch) {
+  if (!currentSessionId) return;
+  try {
+    const r = await apiPost(
+      "/api/sessions/" + currentSessionId + "/summary-slice/" + encodeURIComponent(sl.id),
+      patch
+    );
+    if (r && r.error) { showToast(r.error); await loadMemoryPanel(); return; }
+    MEMORY_STATE = r.memory || MEMORY_STATE;
+    showToast("已保存");
+    if ("name" in patch) syncSceneDividerText(sl.start_round, patch.name);
+    renderSummarySlices((MEMORY_STATE || {}).summary || {});
+  } catch (_) {
+    showToast("保存失败");
+  }
+}
+
+// 面板改名 → 分割线同步：按轮次定位锚点分割线并更新其显示文本（空名回退默认「第 N 场」）
+function syncSceneDividerText(startRound, name) {
+  if (typeof conversation === "undefined" || !Array.isArray(conversation)) return;
+  let seen = 0;
+  for (let i = 0; i < conversation.length; i++) {
+    if (conversation[i].role === "user") {
+      seen++;
+      if (seen === startRound) {
+        const div = document.querySelector('.scene-divider[data-index="' + i + '"]');
+        if (div) {
+          const lbl = div.querySelector(".scene-divider-label");
+          if (lbl) {
+            const shown = (name || "").trim() || (typeof defaultSceneName === "function" ? defaultSceneName(i) : "");
+            lbl.textContent = shown;
+            lbl.title = shown;
+          }
+        }
+        return;
+      }
+    }
+  }
+}
+
+// 分割线改名 → 切片实体同步（render.js 分场编辑回调）：
+// 找起点轮次与该锚点一致的切片，把新名字写回实体（面板列表刷新）。
+window.syncSliceNameFromAnchor = async function (msgIndex, label) {
+  if (!currentSessionId || !MEMORY_STATE) return;
+  if (typeof conversation === "undefined" || !Array.isArray(conversation)) return;
+  let seen = 0;
+  for (let i = 0; i <= msgIndex && i < conversation.length; i++) {
+    if (conversation[i].role === "user") seen++;
+  }
+  const slices = ((MEMORY_STATE.summary || {}).slices) || [];
+  const sl = slices.find((x) => x.start_round === seen);
+  if (!sl) return;
+  if ((sl.name || "") === (label || "")) return;
+  try {
+    const r = await apiPost(
+      "/api/sessions/" + currentSessionId + "/summary-slice/" + encodeURIComponent(sl.id),
+      { name: label || "" }
+    );
+    if (r && r.error) return;
+    MEMORY_STATE = r.memory || MEMORY_STATE;
+    renderSummarySlices((MEMORY_STATE || {}).summary || {});
+  } catch (_) { /* 分割线已更新，切片同步失败静默 */ }
+};
 
 /* ---------------- 事件绑定 ---------------- */
 
@@ -901,6 +1131,17 @@ function bindMemorySummary() {
       saveSummaryConfig(body, sliceInput);
     });
   }
+  // 锚点段保留上限（轮）：锚点段不超过该值时整段总结，超过按切片轮数细分
+  const maxSliceInput = memEl("memorySummaryMaxSlice");
+  if (maxSliceInput) {
+    maxSliceInput.addEventListener("change", () => {
+      const v = parseInt(maxSliceInput.value, 10);
+      if (isNaN(v)) return loadMemoryPanel(); // 无效输入回读
+      const body = { max_slice_rounds: Math.max(1, Math.min(200, v)) };
+      maxSliceInput.value = body.max_slice_rounds;
+      saveSummaryConfig(body, maxSliceInput);
+    });
+  }
 
   // 摘要文本：编辑后失焦自动保存；清空并失焦 = 清除摘要（需确认）
   const summaryTextArea = memEl("memorySummaryText");
@@ -935,6 +1176,9 @@ function bindMemorySummary() {
       if (!currentSessionId) return showToast("请先选择对话");
       const apiKey = loadApiKey();
       if (!apiKey) return showToast("请先在「参数」页填写 API Key");
+      // 全量重建会把手动编辑过的切片摘要一并重算
+      const hasEdited = (((MEMORY_STATE || {}).summary || {}).slices || []).some((x) => x.edited);
+      if (hasEdited && !confirm("重新总结将全量重建所有切片，手动编辑过的切片摘要会被覆盖，确定？")) return;
       runBtn.disabled = true;
       runBtn.textContent = "总结中…";
       try {
@@ -1012,6 +1256,8 @@ function bindMemoryMasterButtons() {
         const sCfg = memNew.summary || {};
         const sSlice = memEl("memorySummarySlice");
         if (sSlice && sCfg.slice_rounds != null) sSlice.value = sCfg.slice_rounds;
+        const sMaxSlice = memEl("memorySummaryMaxSlice");
+        if (sMaxSlice && sCfg.max_slice_rounds != null) sMaxSlice.value = sCfg.max_slice_rounds;
         refreshMemoryCardStates();
         showToast("一键配置已应用");
       } catch (_) {
@@ -1138,6 +1384,31 @@ function bindMemoryCardSwitches() {
   }
 }
 
+/* ---------------- ③ 切片管理模态面板 ---------------- */
+
+// 切片管理模态：入口按钮在记忆页顶部批量操作栏，面板居中显示 + 背景遮罩。
+// 按用户交互约定：显式点 ✕ 关闭（点遮罩不关闭），display 直接切换、无动画。
+function bindSliceModal() {
+  // 图标注入（按钮 + 模态标题）
+  const ic1 = memEl("memorySlicePanelIc");
+  if (ic1) ic1.innerHTML = svgIcon("slice");
+  const ic2 = memEl("memorySliceModalIc");
+  if (ic2) ic2.innerHTML = svgIcon("slice");
+
+  const modal = memEl("memorySliceModal");
+  const openBtn = memEl("memorySlicePanelBtn");
+  const closeBtn = memEl("memorySliceModalClose");
+  if (!modal || !openBtn || !closeBtn) return;
+
+  openBtn.addEventListener("click", () => {
+    if (!currentSessionId) return showToast("请先选择对话");
+    // 打开时重渲染一次，确保内容与会话数据同步
+    renderSummarySlices(((MEMORY_STATE || {}).summary) || {});
+    modal.classList.remove("hidden");
+  });
+  closeBtn.addEventListener("click", () => modal.classList.add("hidden"));
+}
+
 /* ---------------- 初始化 ---------------- */
 
 function initMemoryPanel() {
@@ -1147,6 +1418,7 @@ function initMemoryPanel() {
   bindMemoryFacts();
   bindMemoryContext();
   bindMemorySummary();
+  bindSliceModal();
   bindMemoryVectorTopK();
   bindMemoryMasterButtons();
   bindMemoryCardSwitches();

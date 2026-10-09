@@ -148,6 +148,9 @@ FACT_MAX_PER_SLICE = 5
 # 默认切片宽度 n：每次总结多少「轮」（一轮 = 一次提问 + 一次回答），可由用户设置。
 # 自动总结以切片为单位：每积累一个完整切片（新增轮数 >= 切片宽度）触发一次
 SUMMARY_SLICE_ROUNDS = 8
+# 锚点段保留上限（轮）：用户手动分场（场景锚点）的段不超过该值时整段总结；
+# 超过则按切片宽度细分。会话级 summary.max_slice_rounds 可覆盖（用户自定）。
+SUMMARY_MAX_SEGMENT_ROUNDS = 24
 # 摘要最大字符数（超出的部分提示截断，避免摘要本身过长挤占上下文）
 SUMMARY_MAX_CHARS = 2000
 

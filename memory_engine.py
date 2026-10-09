@@ -6,7 +6,9 @@
     [system prompt]
     [① 核心设定]     世界卡（世界观/背景，先注入）+ 人物卡（角色设定），均静态常驻
     [② 动态关键事实] LLM 切片抽取（自动+手动），本地合并去重，随剧情更新（改名/恋爱等）
-    [③ 剧情摘要]     LLM 切片分段滚动总结，n（切片宽度）可调，自动+手动触发
+    [③ 剧情摘要]     LLM 切片分段滚动总结，n（切片宽度）可调，自动+手动触发；
+                     支持用户手动场景锚点（分场）：锚点为硬边界，锚点段整段总结
+                     （不超上限时），摘要行带【场景标签】前缀
     [④ 向量检索片段] 按需召回对话细节（复用 vector_memory 机制）
     [最近 N 轮对话]
 
@@ -453,11 +455,14 @@ _SUMMARY_MERGE_SYS = (
     "禁止把多个片段塞进一句话，也禁止把一句话拆成多句。\n"
     "2. 旧摘要本身已是这种「一句一行」格式，保留其中仍然有效的行；"
     "新增剧情片段每段压缩成一句话，按时间顺序插入正确位置。\n"
-    "3. 只保留【对剧情有实质影响】的内容；忽略低价值的重复性/机械性操作"
+    "3. 【场景标签】行首的【场景标签】必须原样保留（标签是用户手动标记的分场名，"
+    "是剧情结构的一部分）；合并多行时优先合并标签相同的相邻行，合并后保留标签；"
+    "不同标签的行不得合并成一行。\n"
+    "4. 只保留【对剧情有实质影响】的内容；忽略低价值的重复性/机械性操作"
     "（反复测试、翻页、寒暄、无信息量的确认回复等）。"
     "删除已被后续剧情覆盖的过时信息，相邻两行讲的同一件事可合并成一句。\n"
-    "4. 用第三人称、陈述句。只输出这些摘要行，不要序号、不要标题、不要解释。\n"
-    "5. 【重要】叙述对话双方时禁止把说话者称为「AI」「助手」「模型」「人工智能」等；"
+    "5. 用第三人称、陈述句。只输出这些摘要行，不要序号、不要标题、不要解释。\n"
+    "6. 【重要】叙述对话双方时禁止把说话者称为「AI」「助手」「模型」「人工智能」等；"
     "但若这些词汇是对话讨论的主题内容，应如实保留；"
     "旧摘要中把说话者误称为「AI」「助手」的，替换为角色名或「用户」。"
 )
@@ -512,13 +517,19 @@ def merge_summary(api_key, old_summary, new_slices_text):
 
 
 def run_summary(api_key, username, sid, stored_msgs, slice_rounds=None, full=False):
-    """执行一次剧情总结：把对话切片，分段总结再合并成剧情摘要。
+    """执行一次剧情总结：把对话切片，逐片总结为持久化切片实体（摘要按片存储）。
 
-    增量策略（full=False，默认）：从上次总结到的轮次 last_round 之后开始切片，
-    避免重复总结旧内容，再把新切片摘要与旧摘要合并成一份更新的剧情摘要。
+    切片实体化：切片在全量对话上计算（每片带绝对轮次范围 start/end_round），落袋后
+    持久化为 summary.slices（{id,name,text,start_round,end_round,edited}），整份 text
+    由各片拼接派生（见 storage._summary_slices_text）。增量总结 = 前缀对齐 + 只总结
+    新落袋的片（不再 LLM 合并整份文本）；切片划分变化（锚点增删 / 消息删除影响已
+    落袋区）时自动重建受影响区段，手动编辑过的片（edited）按范围重叠继承文本。
 
-    full=True（重新总结）：忽略上次总结点与旧摘要，把全部历史从头切片总结，
-    生成一份全新的完整摘要并覆盖旧文本（用于 LLM 结果不佳时强制重算）。
+    增量策略（full=False，默认）：最后一个切片是「开放尾段」（剧情仍在推进、未被
+    锚点闭合），本次不总结；无新落袋片时直接返回旧摘要。
+
+    full=True（重新总结）：忽略已有切片实体，把全部历史（含最后的开放尾段）从头
+    切片总结并全量重建（手动编辑过的片文本会被覆盖，前端弹窗提示）。
 
     返回 {"ok": bool, "summary": str, "error": str}。
     slice_rounds: 切片宽度（每次调用喂给模型的轮数）；None 用配置默认。
@@ -531,47 +542,117 @@ def run_summary(api_key, username, sid, stored_msgs, slice_rounds=None, full=Fal
     stored = stored_msgs if stored_msgs is not None else (
         storage.get_session(username, sid).get("messages", []) if storage.get_session(username, sid) else []
     )
-    chat = [
-        {"role": m.get("role"), "content": (m.get("content") or "").strip()}
-        for m in stored
-        if m.get("role") in ("user", "assistant") and (m.get("content") or "").strip()
-    ]
+    chat = []
+    for m in stored:
+        if m.get("role") in ("user", "assistant") and (m.get("content") or "").strip():
+            c = {"role": m.get("role"), "content": (m.get("content") or "").strip()}
+            # 锚点字段必须随消息保留（切片按场景锚点分段；见 _split_at_anchors）
+            if m.get("scene_break"):
+                c["scene_break"] = True
+            if m.get("scene_label"):
+                c["scene_label"] = str(m.get("scene_label"))
+            chat.append(c)
     if not chat:
         return {"ok": False, "error": "没有可总结的对话"}
-    old_summary = "" if full else (memory.get("summary") or {}).get("text", "")
-    last_round = 0 if full else int((memory.get("summary") or {}).get("last_round") or 0)
-    # 从上次总结点之后的消息开始（增量）；full 时从第 0 轮开始（全量重跑）
-    start_idx = _index_of_round(chat, last_round)
-    new_chat = chat[start_idx:]
-    if not new_chat:
-        return {"ok": True, "summary": old_summary}
+    old = memory.get("summary") or {}
+    old_text = old.get("text", "")
+    # 已落袋切片实体（full 重建时视为空 → 全部重算）
+    old_entities = [] if full else list(old.get("slices") or [])
     # 切片宽度（轮数）：显式参数优先 > 会话配置 slice_rounds > 全局默认。
-    # 上限给一个安全的经验值（如 200 轮），避免传超大整数。
     try:
         if slice_rounds is not None:
             slice_n = int(slice_rounds)
         else:
-            conf = (memory.get("summary") or {}).get("slice_rounds")
+            conf = old.get("slice_rounds")
             slice_n = int(conf) if conf is not None else config.SUMMARY_SLICE_ROUNDS
     except (TypeError, ValueError):
         slice_n = config.SUMMARY_SLICE_ROUNDS
     slice_n = max(1, min(slice_n, 200))
-    # 切片：每 slice_n 轮一块（一轮 = 一条 user + 紧随其后的 assistant）
-    slices = _slice_chat(new_chat, slice_n)
-    # 逐片总结
-    slice_texts = []
-    for s in slices:
-        st = summarize_slice(api_key, s)
-        if st:
-            slice_texts.append(st)
-    new_slices_text = "\n\n".join(slice_texts)
-    new_summary = merge_summary(api_key, old_summary, new_slices_text)
-    if not new_summary:
+    # 锚点段保留上限（轮）：会话配置 summary.max_slice_rounds > 全局默认
+    try:
+        max_seg = int(old.get("max_slice_rounds") or 0)
+    except (TypeError, ValueError):
+        max_seg = 0
+    if max_seg <= 0:
+        max_seg = config.SUMMARY_MAX_SEGMENT_ROUNDS
+    # 全量切片（锚点为硬边界 + 段内超上限细分）；临时键 _rid 标注每条消息的绝对轮号
+    # （1-based，user 消息递增），供片的 start/end_round 使用；chat 为本地拷贝，无污染。
+    r = 0
+    for m in chat:
+        if m["role"] == "user":
+            r += 1
+        m["_rid"] = r
+    slices = _build_anchor_slices(chat, slice_n, max_seg)
+    # 落袋集合：增量跳过最后的开放尾段；full 连尾段一起总结
+    settled = slices if full else slices[:-1]
+    if not settled:
+        return {"ok": True, "summary": old_text}
+    # 前缀对齐：与已存实体逐片比对绝对轮次范围，找出真正新增 / 变化的片
+    k = 0
+    while (k < len(old_entities) and k < len(settled)
+           and old_entities[k]["start_round"] == settled[k]["messages"][0]["_rid"]
+           and old_entities[k]["end_round"] == settled[k]["messages"][-1]["_rid"]):
+        k += 1
+    keep = []
+    name_dirty = False
+    for i in range(k):
+        src = old_entities[i]
+        new_name = str(settled[i].get("label") or "").strip()
+        if (src.get("name") or "") != new_name:
+            # 范围一致但场景名变化（打/改锚点后已落袋片的标签跟随），只改名不重总结
+            src = dict(src, name=new_name)
+            name_dirty = True
+        keep.append(src)
+    pending = settled[k:]
+    if not pending:
+        if name_dirty:
+            storage.set_session_summary_slices(username, sid, keep, last_round=None)
+            return {"ok": True, "summary": storage._summary_slices_text(keep)}
+        return {"ok": True, "summary": old_text}
+    # 重建继承池：划分变化后被取代的旧片（edited 者的文本按范围重叠继承）
+    inherit_pool = [e for e in old_entities[k:] if e.get("edited")]
+    new_entities = []
+    for s in pending:
+        msgs = s["messages"]
+        start, end = msgs[0]["_rid"], msgs[-1]["_rid"]
+        name = str(s.get("label") or "").strip()
+        text, edited = None, False
+        # 继承：范围重叠最大的 edited 旧片（场景名相同才继承，避免文本张冠李戴）
+        best, best_ov = None, 0
+        for oe in inherit_pool:
+            ov = min(end, oe["end_round"]) - max(start, oe["start_round"]) + 1
+            if ov > best_ov:
+                best_ov, best = ov, oe
+        if best is not None and best_ov > 0 and (best.get("name") or "") == name:
+            text, edited = best["text"], True
+            inherit_pool = [x for x in inherit_pool if x is not best]
+        else:
+            text = summarize_slice(api_key, msgs)
+        if not text:
+            break  # 本片总结失败：停在上一成功片，进度不推进，下次重试
+        new_entities.append({
+            "name": name, "text": text, "start_round": start, "end_round": end,
+            "edited": edited, "ts": time.time(),
+        })
+    if not new_entities:
         return {"ok": False, "error": "总结生成失败（LLM 不可用或返回空）"}
-    # 截断到上限
-    new_summary = new_summary[: config.SUMMARY_MAX_CHARS]
-    storage.set_session_summary(username, sid, new_summary, last_round=_count_rounds(chat))
-    return {"ok": True, "summary": new_summary}
+    entities = keep + new_entities
+    # 超长压缩：切片拼接后超过上限时，把全部片压成单个「压缩片」（LLM 合并一次；
+    # 输出保留【场景标签】行，场景名冻结在文本内，面板改名不再影响该压缩片）
+    joined = storage._summary_slices_text(entities)
+    if len(joined) > config.SUMMARY_MAX_CHARS:
+        merged = merge_summary(api_key, "", joined)
+        if merged:
+            entities = [{
+                "name": "", "text": merged,
+                "start_round": entities[0]["start_round"],
+                "end_round": entities[-1]["end_round"],
+                "edited": False, "ts": time.time(),
+            }]
+    # 进度推进到最后一个成功处理的片末尾（开放尾段与失败片不计入）
+    new_last = new_entities[-1]["end_round"]
+    storage.set_session_summary_slices(username, sid, entities, last_round=new_last)
+    return {"ok": True, "summary": storage._summary_slices_text(entities)}
 
 
 def _index_of_round(chat, round_count):
@@ -616,14 +697,72 @@ def _slice_chat(chat, round_slice):
     return slices
 
 
+def _split_at_anchors(chat):
+    """按场景锚点（user 消息上的 scene_break 标记）把消息列表分段。
+
+    锚点消息开启新段（label 为该段场景标签）；锚点前若有未成段内容则先落袋。
+    第一条 user 消息上的锚点不切分（其前无内容），但标签归属首段（用户给开场命名）。
+    返回 [{"messages": [...], "label": str|None}]；label 仅用户锚点段有。
+    """
+    segments = []
+    cur = []
+    cur_label = None
+    for m in chat:
+        is_anchor = m.get("role") == "user" and bool(m.get("scene_break"))
+        if is_anchor:
+            if cur:
+                segments.append({"messages": cur, "label": cur_label})
+                cur = []
+            # 锚点标签归属新段；空标签由前端显示为「第 N 场」（后端不补名）
+            cur_label = str(m.get("scene_label") or "").strip() or None
+        cur.append(m)
+    if cur:
+        segments.append({"messages": cur, "label": cur_label})
+    return segments
+
+
+def _build_anchor_slices(chat, slice_rounds, max_segment_rounds):
+    """构建锚点感知切片：用户锚点为硬边界，锚点段整段保留（不超上限时）。
+
+    规则：
+    - 锚点段（以用户场景锚点开头的段）：轮数 <= max_segment_rounds 时整段成一切片
+      （场景级切片）；超过则按 slice_rounds 细分（宽度钳到不超过上限）。
+    - 无锚点内容（首个锚点之前 / 完全没用锚点的会话）：按 slice_rounds 细分，
+      与旧版固定切片行为一致（自动总结节奏不变）。
+    返回 [{"messages": [...], "label": str|None}]；label 为该切片所属段的场景标签
+    （锚点段的每个细分片都带标签，摘要行前缀用；事实抽取忽略 label）。
+    """
+    if slice_rounds is None or slice_rounds <= 0:
+        slice_rounds = config.SUMMARY_SLICE_ROUNDS
+    if max_segment_rounds is None or max_segment_rounds <= 0:
+        max_segment_rounds = config.SUMMARY_MAX_SEGMENT_ROUNDS
+    slices = []
+    for seg in _split_at_anchors(chat):
+        msgs = seg["messages"]
+        label = seg["label"]
+        if label is not None and _count_rounds(msgs) <= max_segment_rounds:
+            # 锚点段且未超上限：整段一个切片（场景级总结）
+            slices.append({"messages": msgs, "label": label})
+            continue
+        # 无锚点内容按切片宽度细分；超上限的锚点段按钳制后的宽度细分
+        width = slice_rounds
+        if label is not None:
+            width = max(1, min(slice_rounds, max_segment_rounds))
+        for part in _slice_chat(msgs, width):
+            slices.append({"messages": part, "label": label})
+    return slices
+
+
 def _count_rounds(chat):
     return sum(1 for m in chat if m["role"] == "user")
 
 
 def should_auto_summary(username, sid, stored_msgs=None):
-    """判断是否达到自动总结阈值（以切片为单位）。
+    """判断是否达到自动总结阈值（存在已闭合的未总结切片）。
 
-    每积累一个完整切片（新增轮数 >= summary.slice_rounds）触发一次自动总结。
+    切片策略与 run_summary 一致（锚点为硬边界 + 超上限细分）。切片后最后一个
+    切片是开放尾段（剧情仍在推进）；除它之外还存在其它切片（被锚点闭合的段 /
+    攒满切片宽度的段）即触发一次自动总结。
     切片宽度优先读会话 memory.summary.slice_rounds，回退 config.SUMMARY_SLICE_ROUNDS。
     剧情摘要开关或自动总结开关（summary.auto）关闭时一律不触发。
     """
@@ -644,6 +783,12 @@ def should_auto_summary(username, sid, stored_msgs=None):
         slice_rounds = 0
     if slice_rounds <= 0:
         slice_rounds = config.SUMMARY_SLICE_ROUNDS
+    try:
+        max_seg = int(summary.get("max_slice_rounds") or 0)
+    except (TypeError, ValueError):
+        max_seg = 0
+    if max_seg <= 0:
+        max_seg = config.SUMMARY_MAX_SEGMENT_ROUNDS
     stored = stored_msgs if stored_msgs is not None else (
         storage.get_session(username, sid).get("messages", []) if storage.get_session(username, sid) else []
     )
@@ -653,7 +798,12 @@ def should_auto_summary(username, sid, stored_msgs=None):
     ]
     total_rounds = _count_rounds(chat)
     last_round = int(summary.get("last_round") or 0)
-    return (total_rounds - last_round) >= slice_rounds
+    if total_rounds <= last_round:
+        return False
+    start_idx = _index_of_round(chat, last_round)
+    slices = _build_anchor_slices(chat[start_idx:], slice_rounds, max_seg)
+    # 除开放尾段外还有切片 → 有已闭合的新内容待总结
+    return len(slices) > 1
 
 
 def extract_facts_for_session(api_key, username, sid, stored_msgs, full=False, auto=True):
@@ -664,10 +814,10 @@ def extract_facts_for_session(api_key, username, sid, stored_msgs, full=False, a
     auto=False（用户手动触发，如「重新总结」按钮 / 一键刷新）：只看卡片总开关，
     不受自动总结开关影响。
 
-    切片策略（自动 / 手动统一）：把对话按 FACT_SLICE_ROUNDS 轮一块切片，
-    每片独立调用一次纯抽取提示词（不带旧事实，避免同义重复滚雪球），
-    本地去重后与现有列表合并。
-    full=False（增量）：只处理 facts_last_round 之后的新切片，
+    切片策略（自动 / 手动统一）：用户场景锚点为硬边界（锚点段不超上限时整段一片），
+    段内再按 FACT_SLICE_ROUNDS 轮细分；每片独立调用一次纯抽取提示词
+    （不带旧事实，避免同义重复滚雪球），本地去重后与现有列表合并。
+    full=False（增量）：只处理 last 进度之后「已闭合」的切片（最后一个开放尾片除外），
     结果并入现有列表并推进进度标记。
     full=True（重新总结）：忽略进度，对全部历史重新抽取，
     生成的新列表【整体替换】旧列表，上锁条目原样保留。
@@ -717,24 +867,33 @@ def extract_facts_for_session(api_key, username, sid, stored_msgs, full=False, a
         max_per_slice = None
 
     # 找出结束轮次超过进度点的切片（部分重叠的切片整片重抽，靠去重兜底）
-    # 增量（auto/手动单次）模式只处理【完整切片】：尾片攒满一片后才抽取，
-    # 避免每新增一轮就重抽一次尾片（导致每轮触发 LLM、事实无上限膨胀）。
+    # 切片：锚点为硬边界（锚点段不超上限时整段一片），段内按切片宽度细分
+    # 锚点段保留上限与剧情摘要共用 summary.max_slice_rounds（用户可配）。
+    try:
+        max_seg = int((memory.get("summary") or {}).get("max_slice_rounds") or 0)
+    except (TypeError, ValueError):
+        max_seg = 0
+    if max_seg <= 0:
+        max_seg = config.SUMMARY_MAX_SEGMENT_ROUNDS
+    # 增量（auto/手动单次）模式只处理【已闭合】的切片：最后一个开放尾片（剧情
+    # 仍在推进）除外，避免每新增一轮就重抽尾片（导致每轮触发 LLM、事实膨胀）。
     # full=True（重新总结）仍处理全部历史含尾片。
-    full_end = total_rounds if full else (total_rounds // slice_n) * slice_n
-    if not full and full_end <= done_rounds:
-        return None  # 尾片未攒满一个完整切片，无事可做
-    slices = _slice_chat(chat, slice_n)
+    slices = _build_anchor_slices(chat, slice_n, max_seg)
+    if not full:
+        if len(slices) <= 1:
+            return None  # 只有开放尾片，无事可做
+        slices = slices[:-1]
     extracted = []  # [{"text","ts"}]
     now = time.time()
     rounds_done = 0
     processed_end = done_rounds
     for sl in slices:
-        sl_rounds = _count_rounds(sl)
+        sl_rounds = _count_rounds(sl["messages"])
         start, end = rounds_done, rounds_done + sl_rounds
         rounds_done = end
-        if end <= done_rounds or end > full_end:
+        if end <= done_rounds:
             continue
-        result = extract_facts(api_key, [], sl, limit=max_per_slice)  # 纯抽取：不带旧事实
+        result = extract_facts(api_key, [], sl["messages"], limit=max_per_slice)  # 纯抽取：不带旧事实
         for f in result or []:
             t = str(f.get("text", "")).strip()
             if t:

@@ -212,6 +212,7 @@ function resetChatUI() {
   sessionTotal = 0;
   sessionHasMore = false;
   sessionMinIndex = 0;
+  sceneAnchors = []; // 场景锚点登记随会话清空
   applyVmToUI(null); // 新建对话：向量记忆默认关闭
   if (window.resetMemoryPanel) window.resetMemoryPanel(); // 记忆页：未选中会话占位
   const box = $("#chatBox");
@@ -293,12 +294,18 @@ async function openSession(id, opts = {}) {
     });
   }
   // 渲染（msgIndex 用全局下标，与后端 delete_message 对齐）
+  // 场景锚点登记：本页消息中带 scene_break 的 user 消息下标（升序），
+  // 供分场默认命名「第 N 场」计数
+  sceneAnchors = (s.messages || [])
+    .filter((m) => m.role === "user" && m.scene_break)
+    .map((m) => m.index);
   (s.messages || []).forEach((m) => {
     if (m.role === "assistant") {
       renderAssistant(m.content, m.reasoning || null, m.index, !!m.interrupted);
     } else {
       // 用户消息强制纯文本：Markdown 语法按原样显示，不渲染
-      addMsgEl(m.role, m.content, false, m.index, m.files || null);
+      addMsgEl(m.role, m.content, false, m.index, m.files || null, null, true,
+        m.scene_break ? { label: m.scene_label || "" } : null);
     }
   });
   // 渲染完成后滚动到最底部
@@ -334,13 +341,21 @@ async function loadOlderMessages() {
       if (m.role === "assistant") {
         renderAssistant(m.content, m.reasoning || null, m.index, !!m.interrupted, firstRow, false);
       } else {
-        addMsgEl(m.role, m.content, false, m.index, m.files || null, firstRow, false);
+        addMsgEl(m.role, m.content, false, m.index, m.files || null, firstRow, false,
+          m.scene_break ? { label: m.scene_label || "" } : null);
       }
     });
     // 扩充模型上下文与分页状态
     conversation = msgs.map((m) => ({ role: m.role, content: m.content, files: m.files || null })).concat(conversation);
     sessionHasMore = !!s.has_more;
     sessionMinIndex = msgs[0].index;
+    // 更早分页中的场景锚点并入登记（保持升序，供分场默认命名计数）
+    const olderAnchors = msgs
+      .filter((m) => m.role === "user" && m.scene_break)
+      .map((m) => m.index);
+    if (olderAnchors.length) {
+      sceneAnchors = Array.from(new Set(olderAnchors.concat(sceneAnchors))).sort((a, b) => a - b);
+    }
     // 顶部插入了新内容，滚动条整体下移：补偿 scrollTop，保持当前可视区域不动
     box.scrollTop = prevScrollTop + (box.scrollHeight - prevHeight);
   } finally {

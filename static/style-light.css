@@ -703,13 +703,18 @@ body {
 .settings-page .settings-body { flex: 1; min-height: 0; }
 
 /* 记忆页：层级卡片 */
-.memory-master-bar {
+#memoryMasterBar {
   display: flex;
+  flex-direction: column;
   gap: 8px;
   margin-bottom: 2px;
 }
+.memory-master-bar {
+  display: flex;
+  gap: 8px;
+}
 .memory-master-bar .mini-btn {
-  flex: 1;               /* 两个按钮平分整行宽度 */
+  flex: 1;               /* 同行按钮平分整行宽度 */
   justify-content: center; /* 文字水平居中 */
   height: 30px;
   line-height: 1;
@@ -1085,6 +1090,247 @@ body {
   color: var(--text-sidebar-dim);
   background: rgba(128, 128, 128, 0.1);
   cursor: not-allowed;
+}
+
+/* 切片管理面板（③ 剧情摘要卡内）：持久化切片实体列表 */
+/* 模态弹层（切片管理）：屏幕居中 + 背景遮罩；显式 ✕ 关闭，display 直接切换无动画 */
+.modal-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 60; /* 设置面板 50 / 遮罩 40 之上 */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.45);
+}
+.modal-mask.hidden { display: none; }
+.modal-panel {
+  display: flex;
+  flex-direction: column;
+  width: min(680px, 92vw);
+  max-height: 80vh;
+  background: var(--bg-topbar);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.28);
+  overflow: hidden;
+}
+.modal-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+  font-weight: 600;
+}
+.modal-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.modal-title .btn-ic svg { width: 16px; height: 16px; }
+.modal-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 18px 18px;
+}
+/* 模态内的提示文字稍大，并与列表留出间距 */
+.modal-body .param-hint {
+  margin: 0 0 12px;
+  font-size: 12px;
+}
+/* mini-btn 内嵌图标（如「切片管理」按钮） */
+.btn-ic {
+  display: inline-flex;
+  align-items: center;
+}
+.btn-ic svg {
+  width: 13px;
+  height: 13px;
+}
+.mini-btn .btn-ic {
+  margin-right: 5px;
+}
+.memory-slice-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0 0 10px;
+}
+.memory-slice-item {
+  border: 1px solid var(--input-border);
+  border-radius: 8px;
+  background: var(--field-bg);
+  overflow: hidden;
+}
+.memory-slice-item.open { border-color: var(--accent); }
+.memory-slice-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 14px;
+  cursor: pointer;
+  font-size: 13px;
+  user-select: none;
+}
+.memory-slice-head:hover { background: var(--btn-hover); }
+.memory-slice-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--field-text);
+  font-weight: 600;
+}
+.memory-slice-item.open .memory-slice-name { color: var(--accent); }
+.memory-slice-range {
+  flex-shrink: 0;
+  color: var(--text-sidebar-dim);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.memory-slice-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 14px 12px;
+  border-top: 1px dashed var(--input-border);
+}
+.memory-slice-field {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--label-color);
+  margin: 0 !important;
+}
+.memory-slice-field > span {
+  flex-shrink: 0;
+  width: 56px;
+  line-height: 34px;
+}
+.memory-slice-field input,
+.memory-slice-field textarea {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--input-border);
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: inherit;
+  line-height: 1.5;
+  background: var(--field-bg);
+  color: var(--field-text);
+  resize: vertical;
+}
+.memory-slice-msgs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 10px;
+  border: 1px solid var(--input-border);
+  border-radius: 6px;
+  background: var(--chip-bg);
+  font-size: 13px;
+}
+.memory-slice-msg {
+  display: flex;
+  gap: 8px;
+  line-height: 1.6;
+}
+.memory-slice-msg-role {
+  flex-shrink: 0;
+  width: 34px;
+  color: var(--text-sidebar-dim);
+  font-size: 12px;
+}
+.memory-slice-msg.user .memory-slice-msg-role { color: var(--accent); }
+.memory-slice-msg-text {
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
+  color: var(--field-text);
+  white-space: pre-wrap;
+}
+
+/* 场景锚点分割线（手动分场）：像素风虚线 + 场景标签，插在锚点消息行之前 */
+.scene-divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 4px;
+  padding: 0 6px;
+  width: 100%;
+  box-sizing: border-box;
+}
+.scene-divider-line {
+  flex: 1;
+  height: 4px;
+  min-width: 12px;
+  /* 像素风虚线：等宽色块重复，image-rendering 保持硬边 */
+  background: repeating-linear-gradient(
+    90deg,
+    var(--accent) 0 8px,
+    transparent 8px 14px
+  );
+  opacity: 0.55;
+}
+.scene-divider-label {
+  max-width: 42%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 3px 8px;
+  flex: 0 0 auto;
+}
+.scene-divider-actions {
+  display: flex;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+.scene-action {
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 2px;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+}
+.scene-action svg {
+  width: 13px;
+  height: 13px;
+  display: block;
+}
+.scene-action:hover {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.scene-action.danger:hover {
+  color: var(--danger);
+}
+/* user 消息操作条中的分场按钮：已打锚点时高亮提示 */
+.msg-action.scene-btn.active {
+  color: var(--accent);
+  border-color: var(--accent);
 }
 
 /* 对话区：chat-wrap 承接 .main 的弹性布局，chat-box 在其内部滚动 */

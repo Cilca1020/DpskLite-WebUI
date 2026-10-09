@@ -14,7 +14,8 @@
   POST /api/sessions/<id>/msg  -> 向会话追加一条消息（非流式，存历史用）
   DELETE /api/sessions/<id>/msg/<index> -> 删除会话中第 index 条消息（不含 system）
   POST /api/sessions/<id>/cards-item  -> 人物卡条目操作（add/update/delete）
-  POST /api/sessions/<id>/worlds-item -> 世界卡条目操作（add/update/delete）
+    POST /api/sessions/<id>/worlds-item -> 世界卡条目操作（add/update/delete）
+    POST /api/sessions/<id>/summary-slice/<slice_id> -> 编辑单个剧情切片（名称/摘要）
   GET  /api/presets            -> 参数预设列表
   POST /api/presets            -> 保存预设
   DELETE /api/presets/<name>   -> 删除预设
@@ -706,8 +707,9 @@ def api_run_summary(sid):
 def api_summary_config(sid):
     """读取 / 设置会话剧情摘要的触发参数。
 
-    GET 返回当前配置；POST body 可选 {"slice_rounds": int, "enabled": bool}，
-    传哪个更新哪个。自动总结以切片为单位：每积累一个完整切片触发一次。
+    GET 返回当前配置；POST body 可选 {"slice_rounds": int, "enabled": bool,
+    "max_slice_rounds": int（锚点段保留上限，轮）}，传哪个更新哪个。
+    自动总结以切片为单位：存在已闭合的未总结切片时触发。
     """
     username = session["username"]
     if request.method == "GET":
@@ -717,21 +719,24 @@ def api_summary_config(sid):
         s = mem.get("summary") or {}
         return jsonify({
             "slice_rounds": s.get("slice_rounds"),
+            "max_slice_rounds": s.get("max_slice_rounds", config.SUMMARY_MAX_SEGMENT_ROUNDS),
             "enabled": s.get("enabled", True),
         })
     data = request.get_json(force=True, silent=True) or {}
     slice_rounds = data.get("slice_rounds")
+    max_slice_rounds = data.get("max_slice_rounds")
     enabled = data.get("enabled")
-    if slice_rounds is None and enabled is None:
-        return jsonify({"error": "至少提供 slice_rounds / enabled 之一"}), 400
+    if slice_rounds is None and enabled is None and max_slice_rounds is None:
+        return jsonify({"error": "至少提供 slice_rounds / max_slice_rounds / enabled 之一"}), 400
     mem = storage.set_session_summary_config(
-        username, sid, slice_rounds=slice_rounds, enabled=enabled
+        username, sid, slice_rounds=slice_rounds, enabled=enabled, max_slice_rounds=max_slice_rounds
     )
     if mem is None:
         return jsonify({"error": "会话不存在"}), 404
     s = mem.get("summary") or {}
     return jsonify({
         "slice_rounds": s.get("slice_rounds"),
+        "max_slice_rounds": s.get("max_slice_rounds", config.SUMMARY_MAX_SEGMENT_ROUNDS),
         "enabled": s.get("enabled", True),
     })
 
@@ -780,6 +785,29 @@ def api_summary_text(sid):
     if mem is None:
         return jsonify({"error": "会话不存在"}), 404
     return jsonify({"memory": mem})
+
+
+@app.route("/api/sessions/<sid>/summary-slice/<slice_id>", methods=["POST"])
+def api_summary_slice(sid, slice_id):
+    """编辑单个剧情切片实体（切片管理面板入口）。
+
+    body 可选 {"name": str, "text": str}，传哪个更新哪个；更新后该片标记 edited，
+    整份摘要 text 重派生。改名时若该片起点轮次带场景锚点，同步更新锚点
+    scene_label（前端分割线显示名跟随）。返回 {"memory", "slice"}。
+    """
+    username = session["username"]
+    data = request.get_json(force=True, silent=True) or {}
+    name = data.get("name") if "name" in data else None
+    text = data.get("text") if "text" in data else None
+    if name is None and text is None:
+        return jsonify({"error": "至少提供 name / text 之一"}), 400
+    result = storage.update_summary_slice(username, sid, slice_id, name=name, text=text)
+    if result is None:
+        return jsonify({"error": "会话不存在或切片不存在"}), 404
+    # 改名同步：该片起点轮次上的锚点 scene_label 跟随更新（无锚点则跳过）
+    if name is not None:
+        storage.rename_scene_anchor(username, sid, result["slice"]["start_round"], name)
+    return jsonify({"memory": result["memory"], "slice": result["slice"]})
 
 
 @app.route("/api/sessions/<sid>/memory-switches", methods=["POST"])
@@ -1056,6 +1084,26 @@ def api_delete_msg(sid, index):
     if saved_session is None:
         return jsonify({"error": "会话不存在或下标越界"}), 404
     return jsonify(saved_session)
+
+
+@app.route("/api/sessions/<sid>/msg/<int:index>/scene-break", methods=["POST"])
+def api_scene_break(sid, index):
+    """设置 / 清除指定 user 消息上的场景锚点（手动分场标记）。
+
+    body: {"scene_break": bool, "scene_label": str}。
+    scene_break=True 打锚点（scene_label 可空，空则前端显示默认「第 N 场」）；
+    scene_break=False 清除锚点。锚点只允许打在 user 消息（轮首）上。
+    """
+    username = session["username"]
+    data = request.get_json(force=True, silent=True) or {}
+    scene_break = bool(data.get("scene_break"))
+    scene_label = data.get("scene_label")
+    message = storage.set_message_scene_break(
+        username, sid, index, scene_break=scene_break, scene_label=scene_label
+    )
+    if message is None:
+        return jsonify({"error": "会话不存在、下标越界或该消息不是用户消息"}), 404
+    return jsonify({"ok": True, "message": message})
 
 
 @app.route("/api/sessions/<sid>/msg", methods=["POST"])

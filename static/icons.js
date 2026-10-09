@@ -20,6 +20,10 @@ const ICONS = {
   chat: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5Z"/></svg>',
   // star：取自 static/assets/svg/star.svg，改为 currentColor 填充以跟随主题
   star: '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12.962,4.6,14.9,8.513a1,1,0,0,0,.755.546l4.482.649a1,1,0,0,1,.555,1.705l-3.241,3.145a1,1,0,0,0-.289.886l.741,4.3a1.07,1.07,0,0,1-1.553,1.127L12.466,18.84a1.009,1.009,0,0,0-.932,0L7.649,20.874a1.073,1.073,0,0,1-1.556-1.13l.741-4.3a1,1,0,0,0-.289-.886L3.3,11.413a1,1,0,0,1,.555-1.7l4.482-.649A1,1,0,0,0,9.1,8.513L11.038,4.6A1.074,1.074,0,0,1,12.962,4.6Z"/></svg>',
+  // scene：场景锚点（手动分场）按钮图标（羽毛旗 flag）
+  scene: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg>',
+  // slice：切片管理入口（堆叠分层切片）
+  slice: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 2 7.5 12 13l10-5.5L12 2z"/><path d="M2 12.5 12 18l10-5.5"/><path d="M2 17.5 12 23l10-5.5"/></svg>',
 };
 
 // 生成图标按钮内部的 svg 元素（统一尺寸类）
@@ -65,3 +69,6 @@ let conversation = [];
 let lastUserMsgIndex = null;
 // 当前会话最后一条 assistant 消息的下标（仅这一条显示「重试」按钮）；null 表示无
 let lastAssistantMsgIndex = null;
+// 当前会话已打场景锚点（手动分场）的 user 消息全局下标列表（升序），
+// 供「第 N 场」默认命名计数；openSession/loadOlderMessages 重建，分场操作就地维护
+let sceneAnchors = [];

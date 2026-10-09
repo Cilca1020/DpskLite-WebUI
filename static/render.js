@@ -88,7 +88,8 @@ function hideEmptyHint(box) {
 // files：用户消息携带的文件（渲染为气泡上方的文件卡片）；
 // anchorEl：非 null 时把消息行插入到该元素之前（加载更早消息用），否则追加到末尾；
 // autoScroll：插入后是否自动滚动到底部（加载更早消息时应关闭，保持视口位置）。
-function addMsgEl(role, text, markdown = true, msgIndex = null, files = null, anchorEl = null, autoScroll = true) {
+// scene：非 null 表示该 user 消息带场景锚点（{label}），在气泡行之前渲染分场分割线。
+function addMsgEl(role, text, markdown = true, msgIndex = null, files = null, anchorEl = null, autoScroll = true, scene = null) {
   const box = $("#chatBox");
   // 每行容器：包裹气泡 + 气泡外的操作条
   const row = document.createElement("div");
@@ -168,6 +169,18 @@ function addMsgEl(role, text, markdown = true, msgIndex = null, files = null, an
       };
       bar.appendChild(copyMdBtn);
     }
+    // 分场按钮：仅 user 消息显示。未打锚点 = 在此分场；已打锚点 = 编辑分场名称
+    if (role === "user") {
+      const sceneBtn = document.createElement("button");
+      sceneBtn.className = "msg-action scene-btn" + (scene ? " active" : "");
+      sceneBtn.title = scene ? "编辑分场名称" : "在此分场（场景锚点，用于剧情总结分段）";
+      sceneBtn.innerHTML = svgIcon("scene");
+      sceneBtn.onclick = (e) => {
+        e.stopPropagation();
+        addSceneBreak(row, msgIndex, scene ? (scene.label || "") : undefined);
+      };
+      bar.appendChild(sceneBtn);
+    }
     const delBtn = document.createElement("button");
     delBtn.className = "msg-action";
     delBtn.title = "删除这条消息（连同同轮另一条）";
@@ -197,9 +210,139 @@ function addMsgEl(role, text, markdown = true, msgIndex = null, files = null, an
   if (bar && role === "assistant" && !text) bar.style.display = "none";
   if (anchorEl) box.insertBefore(row, anchorEl); // 加载更早消息：插入到指定元素之前
   else box.appendChild(row);
+  // 场景锚点分割线：紧贴本消息行之前（就地插入，顺序不受 loadOlderMessages 前插影响）
+  if (scene && role === "user") box.insertBefore(buildSceneDivider(scene.label, msgIndex), row);
   hideEmptyHint(box); // 有新消息时移除空会话欢迎提示
   if (autoScroll) box.scrollTop = box.scrollHeight;
   return div; // 返回气泡，供上层插入 reasoning 折叠块
+}
+
+/* ---------------- 场景锚点（手动分场） ----------------
+ * user 消息上打「场景锚点」（scene_break / scene_label，随消息存储），
+ * 后端剧情总结/事实抽取按锚点硬边界切片：锚点段不超上限时整段总结（场景级），
+ * 摘要行带【场景标签】前缀。分割线渲染为像素风虚线 + 标签，可改名/删除。
+ */
+
+// 「第 N 场」默认命名：N = 该消息之前已有的锚点数 + 1
+function defaultSceneName(msgIndex) {
+  const before = (typeof sceneAnchors !== "undefined" ? sceneAnchors : []).filter((i) => i < msgIndex).length;
+  return "第 " + (before + 1) + " 场";
+}
+
+// 弹出分场命名输入（原生 prompt，显式确认）。取消返回 null；返回裁剪后的名称（可空串）。
+function promptSceneLabel(msgIndex, current) {
+  const tip = current === undefined
+    ? "分场名称（留空 = " + defaultSceneName(msgIndex) + "）："
+    : "修改分场名称（留空 = " + defaultSceneName(msgIndex) + "）：";
+  const name = prompt(tip, current === undefined ? "" : current);
+  if (name === null) return null;
+  return name.trim().slice(0, 50);
+}
+
+// 打 / 改某条 user 消息的场景锚点。existingLabel 传 undefined 表示新打锚点。
+// 就地插入/更新分割线，不整页重绘（避免长对话滚动位置丢失）。
+async function addSceneBreak(row, msgIndex, existingLabel) {
+  if (!currentSessionId || msgIndex === null) return;
+  const label = promptSceneLabel(msgIndex, existingLabel);
+  if (label === null) return; // 用户取消
+  try {
+    const r = await apiPost(
+      "/api/sessions/" + currentSessionId + "/msg/" + msgIndex + "/scene-break",
+      { scene_break: true, scene_label: label }
+    );
+    if (r && r.error) return showToast(r.error);
+    // 更新锚点登记（供后续默认命名计数）
+    if (!sceneAnchors.includes(msgIndex)) {
+      sceneAnchors.push(msgIndex);
+      sceneAnchors.sort((a, b) => a - b);
+    }
+    // 移除旧分割线（编辑场景）后在消息行前插入新的
+    const old = document.querySelector('.scene-divider[data-index="' + msgIndex + '"]');
+    if (old) old.remove();
+    row.parentNode.insertBefore(buildSceneDivider(label, msgIndex), row);
+    showToast("已分场");
+  } catch (_) {
+    showToast("分场失败");
+  }
+}
+
+// 删除场景锚点：相邻两段重新合并为一个分段
+async function removeSceneBreak(msgIndex) {
+  if (!currentSessionId) return;
+  if (!confirm("删除该分场标记？相邻两段将合并为一个分段。")) return;
+  try {
+    const r = await apiPost(
+      "/api/sessions/" + currentSessionId + "/msg/" + msgIndex + "/scene-break",
+      { scene_break: false }
+    );
+    if (r && r.error) return showToast(r.error);
+    sceneAnchors = sceneAnchors.filter((i) => i !== msgIndex);
+    const dv = document.querySelector('.scene-divider[data-index="' + msgIndex + '"]');
+    if (dv) dv.remove();
+    showToast("已删除分场");
+  } catch (_) {
+    showToast("删除失败");
+  }
+}
+
+// 构建分场分割线元素：像素风虚线 + 场景标签（短名完整显示，超长省略号 + 悬停完整提示），
+// 标签右侧提供改名 / 删除按钮（常驻显示，兼容移动端）
+function buildSceneDivider(label, msgIndex) {
+  const dv = document.createElement("div");
+  dv.className = "scene-divider";
+  dv.dataset.index = msgIndex;
+  const lineBefore = document.createElement("span");
+  lineBefore.className = "scene-divider-line";
+  const name = document.createElement("span");
+  name.className = "scene-divider-label";
+  const shown = (label || "").trim() || defaultSceneName(msgIndex);
+  name.textContent = shown;
+  name.title = shown;
+  const lineAfter = document.createElement("span");
+  lineAfter.className = "scene-divider-line";
+  const actions = document.createElement("span");
+  actions.className = "scene-divider-actions";
+  const editBtn = document.createElement("button");
+  editBtn.className = "scene-action";
+  editBtn.type = "button";
+  editBtn.title = "修改分场名称";
+  editBtn.innerHTML = svgIcon("edit");
+  editBtn.onclick = async (e) => {
+    e.stopPropagation();
+    const nl = promptSceneLabel(msgIndex, name.textContent);
+    if (nl === null) return;
+    try {
+      const r = await apiPost(
+        "/api/sessions/" + currentSessionId + "/msg/" + msgIndex + "/scene-break",
+        { scene_break: true, scene_label: nl }
+      );
+      if (r && r.error) return showToast(r.error);
+      const updated = nl || defaultSceneName(msgIndex);
+      name.textContent = updated;
+      name.title = updated;
+      // 双向同步：把新名字写回已落袋切片实体（切片管理面板显示名跟随）
+      if (window.syncSliceNameFromAnchor) window.syncSliceNameFromAnchor(msgIndex, nl);
+      showToast("已保存");
+    } catch (_) {
+      showToast("保存失败");
+    }
+  };
+  const delBtn = document.createElement("button");
+  delBtn.className = "scene-action danger";
+  delBtn.type = "button";
+  delBtn.title = "删除分场标记";
+  delBtn.innerHTML = svgIcon("trash");
+  delBtn.onclick = (e) => {
+    e.stopPropagation();
+    removeSceneBreak(msgIndex);
+  };
+  actions.appendChild(editBtn);
+  actions.appendChild(delBtn);
+  dv.appendChild(lineBefore);
+  dv.appendChild(name);
+  dv.appendChild(lineAfter);
+  dv.appendChild(actions);
+  return dv;
 }
 
 // 构建"文件卡片"元素（代表文件的气泡），供用户消息渲染使用

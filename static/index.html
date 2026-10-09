@@ -227,10 +227,15 @@
     <!-- 记忆页：按记忆层级顺序放置卡片 ⓪系统提示词 ①核心设定(世界卡+人物卡) ②动态关键事实 ③剧情摘要 ④向量记忆 -->
     <div class="settings-page hidden" id="settingsPageMemory">
       <div class="settings-body">
-        <!-- 顶部批量操作：一键配置（打开 2/3/4 开关并恢复默认值） / 关闭智能总结（关闭 2/3/4，0/1 继续生效） -->
-        <div class="memory-master-bar" id="memoryMasterBar">
-          <button id="memoryOneClickBtn" class="mini-btn" type="button" title="打开卡片 2/3/4 开关与自动总结开关，并把数值恢复为默认（最近 N 轮=10）">一键配置</button>
-          <button id="memoryDisableSmartBtn" class="mini-btn" type="button" title="关闭卡片 2/3/4 的开关，保留卡片内容（0/1 的输入继续生效）">关闭智能总结</button>
+        <!-- 顶部批量操作：第一行切片管理（模态面板），第二行一键配置 / 关闭智能总结 -->
+        <div id="memoryMasterBar">
+          <div class="memory-master-bar">
+            <button id="memorySlicePanelBtn" class="mini-btn" type="button" title="查看/编辑剧情切片：每片的对话内容、场景名与本片摘要"><span class="btn-ic" id="memorySlicePanelIc"></span>切片管理</button>
+          </div>
+          <div class="memory-master-bar">
+            <button id="memoryOneClickBtn" class="mini-btn" type="button" title="打开卡片 2/3/4 开关与自动总结开关，并把数值恢复为默认（最近 N 轮=10）">一键配置</button>
+            <button id="memoryDisableSmartBtn" class="mini-btn" type="button" title="关闭卡片 2/3/4 的开关，保留卡片内容（0/1 的输入继续生效）">关闭智能总结</button>
+          </div>
         </div>
 
         <!-- 未选中会话时的占位提示 -->
@@ -349,9 +354,13 @@
               <span>切片轮数</span>
               <input id="memorySummarySlice" type="number" min="1" max="200" step="1" />
             </label>
+            <label class="memory-num-field">
+              <span>锚点段上限</span>
+              <input id="memorySummaryMaxSlice" type="number" min="1" max="200" step="1" />
+            </label>
             <button id="memorySummaryRunBtn" class="mini-btn accent" type="button">重新总结</button>
           </div>
-          <span class="param-hint">在这里存储对话内容梗概。<br>每积累一个完整切片（切片轮数轮）自动总结一次；关闭自动总结后仅手动。</span>
+          <span class="param-hint">在这里存储对话内容梗概。<br>每积累一个完整切片（切片轮数轮）自动总结一次；关闭自动总结后仅手动。<br>在消息上点旗标可「分场」：锚点为硬边界，锚点段不超上限时整段总结，摘要行带【场景名】前缀。<br>总结落袋后，点顶部「切片管理」可查看每片对话内容、编辑场景名与本片摘要（与消息分割线双向同步）。</span>
         </section>
 
         <!-- ④ 向量记忆 -->
@@ -379,6 +388,22 @@
       </div>
     </div><!-- /settingsPageMemory -->
   </aside>
+
+  <!-- 切片管理面板（模态：屏幕居中 + 背景遮罩；显式点 ✕ 关闭，无自动关闭/动画） -->
+  <div id="memorySliceModal" class="modal-mask hidden">
+    <div class="modal-panel">
+      <div class="modal-head">
+        <span class="modal-title"><span class="btn-ic" id="memorySliceModalIc"></span>切片管理</span>
+        <button id="memorySliceModalClose" class="icon-btn" type="button" title="关闭">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <span class="param-hint">已总结落袋的剧情切片（按剧情顺序）。展开可查看本片对话内容、编辑场景名与本片摘要；改名与消息分割线双向同步。</span>
+        <div class="memory-slice-list" id="memorySliceList"></div>
+      </div>
+    </div>
+  </div>
 
   <!-- 前端脚本统一动态加载（带失败自动重试，缓解网络不稳导致加载失败）。
        顺序保持依赖关系：文档库 → 基础工具 → API → 渲染 → 会话 → 聊天 → 入口 -->
