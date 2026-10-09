@@ -137,7 +137,10 @@ def build_context(username, sid, user_messages, data=None, params=None, stored_m
     # ③ 剧情摘要（开关开启时无条件注入；N 值不影响是否注入）
     summary = (memory or {}).get("summary")
     summary_enabled = bool((summary or {}).get("enabled", True))
-    if (summary and str(summary.get("text", "")).strip() and summary_enabled):
+    # 注入内容取决于分页选择（summary.active）：切片模式注入切片拼接，否则整份文本；
+    # 两者任一有内容即注入（切片模式下无切片时 _summary_block 回退整份文本）
+    has_summary = bool(summary and (str(summary.get("text", "")).strip() or summary.get("slices")))
+    if summary and has_summary and summary_enabled:
         layers.append({"role": _SUMMARY_ROLE, "content": _summary_block(summary)})
 
     # ④ 向量检索片段（按需）+ 最近窗口
@@ -195,6 +198,13 @@ def _facts_block(facts):
 
 
 def _summary_block(summary):
+    """第③层剧情摘要注入块。注入内容由 summary.active（前端摘要卡分页选择）决定：
+
+    - "slices"：注入切片摘要（切片实体拼接，锚点场景带【场景名】前缀）；无切片回退整份文本
+    - "text"（默认）：注入整份摘要文本（文本线滚动总结产物）
+    """
+    if summary.get("active") == "slices" and summary.get("slices"):
+        return f"【剧情摘要（截至目前的剧情进度）】\n{storage._summary_slices_text(summary['slices'])}"
     return f"【剧情摘要（截至目前的剧情进度）】\n{summary.get('text', '')}"
 
 

@@ -260,6 +260,7 @@ def _parse_summary(s):
         "last_round": 0,
         "slice_rounds": config.SUMMARY_SLICE_ROUNDS,
         "slices": [],     # 持久化切片实体（落袋切片）
+        "active": "text", # 注入模式（前端摘要卡分页选择）：text=整份文本 / slices=切片拼接
         "enabled": True,  # ③ 剧情摘要开关（关闭时保留内容但停止注入/自动/手动总结）
         "auto": True,     # ③ 自动总结开关（总开关下一级；关闭时后台不自动总结，仅手动）
     }
@@ -270,6 +271,8 @@ def _parse_summary(s):
     out["enabled"] = bool(s.get("enabled", True))
     out["auto"] = bool(s.get("auto", True))
     out["slices"] = _parse_summary_slices(s.get("slices"))
+    act = str(s.get("active") or "text").strip()
+    out["active"] = act if act in ("text", "slices") else "text"
     try:
         out["summarized_ts"] = float(s["summarized_ts"]) if s.get("summarized_ts") is not None else None
     except (TypeError, ValueError):
@@ -763,10 +766,11 @@ def update_summary_slice(username, sid, slice_id, name=None, text=None):
     return {"memory": memory, "slice": target}
 
 
-def set_session_summary_config(username, sid, slice_rounds=None, enabled=None):
-    """设置会话剧情摘要的触发参数（slice_rounds 切片宽度 / enabled 开关）。
+def set_session_summary_config(username, sid, slice_rounds=None, enabled=None, active=None):
+    """设置会话剧情摘要的触发参数（slice_rounds 切片宽度 / enabled 开关 / active 注入模式）。
 
-    只更新传入的参数，其余保留。返回新 memory 或 None（会话不存在）。
+    只更新传入的参数，其余保留。active 取 "text"（整份文本）或 "slices"（切片拼接）。
+    返回新 memory 或 None（会话不存在）。
     """
     memory = get_session_memory(username, sid)
     if memory is None:
@@ -780,6 +784,12 @@ def set_session_summary_config(username, sid, slice_rounds=None, enabled=None):
             changed = True
         except (TypeError, ValueError):
             pass
+    if active is not None:
+        act = str(active).strip()
+        if act in ("text", "slices"):
+            s = dict(s)
+            s["active"] = act
+            changed = True
     if enabled is not None:
         s = dict(s)
         s["enabled"] = bool(enabled)

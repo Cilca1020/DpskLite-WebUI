@@ -709,7 +709,8 @@ def api_run_summary(sid):
 def api_summary_config(sid):
     """读取 / 设置会话剧情摘要的触发参数。
 
-    GET 返回当前配置；POST body 可选 {"slice_rounds": int, "enabled": bool}，
+    GET 返回当前配置；POST body 可选 {"slice_rounds": int, "enabled": bool,
+    "active": "text"|"slices"（注入模式，与前端摘要卡分页选择同步）}，
     传哪个更新哪个。
     """
     username = session["username"]
@@ -720,21 +721,24 @@ def api_summary_config(sid):
         s = mem.get("summary") or {}
         return jsonify({
             "slice_rounds": s.get("slice_rounds"),
+            "active": s.get("active", "text"),
             "enabled": s.get("enabled", True),
         })
     data = request.get_json(force=True, silent=True) or {}
     slice_rounds = data.get("slice_rounds")
     enabled = data.get("enabled")
-    if slice_rounds is None and enabled is None:
-        return jsonify({"error": "至少提供 slice_rounds / enabled 之一"}), 400
+    active = data.get("active")
+    if slice_rounds is None and enabled is None and active is None:
+        return jsonify({"error": "至少提供 slice_rounds / active / enabled 之一"}), 400
     mem = storage.set_session_summary_config(
-        username, sid, slice_rounds=slice_rounds, enabled=enabled
+        username, sid, slice_rounds=slice_rounds, enabled=enabled, active=active
     )
     if mem is None:
         return jsonify({"error": "会话不存在"}), 404
     s = mem.get("summary") or {}
     return jsonify({
         "slice_rounds": s.get("slice_rounds"),
+        "active": s.get("active", "text"),
         "enabled": s.get("enabled", True),
     })
 

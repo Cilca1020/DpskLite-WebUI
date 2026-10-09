@@ -106,9 +106,9 @@ function renderMemoryPanel() {
   }
   // 切片管理面板（持久化切片实体列表；无实体时隐藏）
   renderSummarySlices(summary);
-  // 摘要卡「切片摘要」分页：只读列表 + 恢复当前分页选择
+  // 摘要卡「切片摘要」分页：只读列表 + 按会话保存的注入模式恢复分页选择
   renderSliceMiniList(summary);
-  setSummaryTab(SUMMARY_TAB);
+  setSummaryTab(summary.active === "slices" ? "slice" : "text");
 
   // ④ 向量记忆：模型/开关/N 由 applyVmToUI 管理，这里同步 top_k 输入框
   const vec = mem.vector || {};
@@ -189,6 +189,19 @@ function setSummaryTab(tab) {
   if (tabSlice) tabSlice.classList.toggle("active", SUMMARY_TAB === "slice");
   if (pageText) pageText.classList.toggle("hidden", SUMMARY_TAB !== "text");
   if (pageSlice) pageSlice.classList.toggle("hidden", SUMMARY_TAB !== "slice");
+}
+
+// 保存摘要注入模式（与分页选择同步持久化）：切换分页即切换 LLM 注入的摘要内容
+async function saveSummaryActive(active) {
+  if (!currentSessionId) return;
+  MEMORY_STATE = MEMORY_STATE || {};
+  MEMORY_STATE.summary = Object.assign({}, MEMORY_STATE.summary || {}, { active });
+  try {
+    const r = await apiPost("/api/sessions/" + currentSessionId + "/summary-config", { active });
+    if (r && r.error) throw new Error(r.error);
+  } catch (e) {
+    showToast(e && e.message ? e.message : "切换失败");
+  }
 }
 
 // 渲染持久化切片列表（summary.slices）。每片：折叠头（名称 + 轮次范围）+
@@ -1235,8 +1248,8 @@ function bindMemorySummary() {
   // 摘要卡二选一分页：文本摘要 / 切片摘要
   const tabText = memEl("summaryTabText");
   const tabSlice = memEl("summaryTabSlice");
-  if (tabText) tabText.addEventListener("click", () => setSummaryTab("text"));
-  if (tabSlice) tabSlice.addEventListener("click", () => setSummaryTab("slice"));
+  if (tabText) tabText.addEventListener("click", () => { setSummaryTab("text"); saveSummaryActive("text"); });
+  if (tabSlice) tabSlice.addEventListener("click", () => { setSummaryTab("slice"); saveSummaryActive("slices"); });
 }
 
 // ④ 向量记忆：top_k 输入保存（模型/开关/N 的保存逻辑在 main.js / sessions.js）
@@ -1454,6 +1467,10 @@ function bindSliceModal() {
   if (openBtn) openBtn.addEventListener("click", openModal);
   if (openBtn2) openBtn2.addEventListener("click", openModal);
   closeBtn.addEventListener("click", () => modal.classList.add("hidden"));
+  // 点击面板外（遮罩区域）关闭：仅当点击目标就是遮罩层本身时
+  modal.addEventListener("click", (e) => {
+    if (e.target === modal) modal.classList.add("hidden");
+  });
 }
 
 /* ---------------- 初始化 ---------------- */
