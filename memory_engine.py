@@ -829,8 +829,9 @@ def _split_at_anchors(chat):
             if cur:
                 segments.append({"messages": cur, "label": cur_label})
                 cur = []
-            # 锚点标签归属新段；空标签由前端显示为「第 N 场」（后端不补名）
-            cur_label = str(m.get("scene_label") or "").strip() or None
+            # 锚点标签归属新段；空标签（含自动补的开场锚点）保留空串——
+            # 锚点段始终整段成片，仅 name 为空时前端显示「第 N 片」
+            cur_label = str(m.get("scene_label") or "").strip()
         cur.append(m)
     if cur:
         segments.append({"messages": cur, "label": cur_label})

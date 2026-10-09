@@ -261,7 +261,7 @@ def _parse_summary(s):
         "slice_rounds": config.SUMMARY_SLICE_ROUNDS,
         "slices": [],     # 持久化切片实体（落袋切片）
         "active": "text", # 注入模式（前端摘要卡分页选择）：text=整份文本 / slices=切片拼接
-        "slice_auto": False,  # 切片自动总结开关：开启后每打一个锚点自动总结前一个切片
+        "slice_auto": True,   # 切片自动总结开关：开启后每打一个锚点自动总结前一个切片
         "enabled": True,  # ③ 剧情摘要开关（关闭时保留内容但停止注入/自动/手动总结）
         "auto": True,     # ③ 自动总结开关（总开关下一级；关闭时后台不自动总结，仅手动）
     }
@@ -271,7 +271,7 @@ def _parse_summary(s):
     out["text"] = str(s.get("text") or "").strip()
     out["enabled"] = bool(s.get("enabled", True))
     out["auto"] = bool(s.get("auto", True))
-    out["slice_auto"] = bool(s.get("slice_auto", False))
+    out["slice_auto"] = bool(s.get("slice_auto", True))
     out["slices"] = _parse_summary_slices(s.get("slices"))
     act = str(s.get("active") or "text").strip()
     out["active"] = act if act in ("text", "slices") else "text"
@@ -1076,6 +1076,42 @@ def set_message_scene_break(username, sid, index, scene_break, scene_label=None)
     session["updated_at"] = time.time()
     _save_session(username, session)
     return message
+
+
+def ensure_first_anchor(username, sid):
+    """确保会话存在「开场锚点」：首个锚点打在中间时，自动给首条 user 消息补一个
+    场景锚点，使「首轮 → 第一个用户锚点」整段成一个切片（开场段不按切片轮数细分）。
+
+    - 会话没有任何锚点：不处理（无锚点会话保持按切片轮数细分）
+    - 首条 user 消息已带锚点（用户自己打的或此前已补）：不处理
+    - 有锚点但首条 user 消息未带：补 scene_break=True（label 留空，前端显示默认「第 1 场」）
+
+    返回 {"added": bool, "index": int}：added=True 表示本次补了锚点，index 为
+    首条 user 消息下标（非 system，与前端 msgIndex 一致，供就地插入分割线）；
+    会话不存在返回 None。
+    """
+    session = get_session(username, sid)
+    if session is None:
+        return None
+    indices = [i for i, m in enumerate(session["messages"]) if m.get("role") != "system"]
+    first_user = next(
+        (k for k, i in enumerate(indices) if session["messages"][i].get("role") == "user"), None
+    )
+    if first_user is None:
+        return {"added": False, "index": -1}
+    has_anchor = any(
+        session["messages"][i].get("scene_break")
+        for i in indices
+        if session["messages"][i].get("role") == "user"
+    )
+    first_msg = session["messages"][indices[first_user]]
+    if not has_anchor or first_msg.get("scene_break"):
+        return {"added": False, "index": first_user}
+    first_msg["scene_break"] = True
+    first_msg.pop("scene_label", None)
+    session["updated_at"] = time.time()
+    _save_session(username, session)
+    return {"added": True, "index": first_user}
 
 
 def rename_scene_anchor(username, sid, round_no, label):

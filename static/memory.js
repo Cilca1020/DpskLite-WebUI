@@ -207,6 +207,19 @@ async function saveSummaryActive(active) {
   }
 }
 
+// 切片线总结落袋后的刷新钩子（render.js 打锚点自动总结成功时调用）：
+// 记忆面板已加载过数据时重拉记忆并重渲染，切片列表立即出现新落袋的片
+window.syncSlicesAfterRun = async function () {
+  if (!currentSessionId || !MEMORY_STATE) return;
+  try {
+    const r = await apiGet("/api/sessions/" + currentSessionId + "/memory");
+    if (r && !r.error) {
+      MEMORY_STATE = r.memory || {};
+      renderMemoryPanel();
+    }
+  } catch (_) {}
+};
+
 // 渲染持久化切片列表（summary.slices）。每片：折叠头（名称 + 轮次范围）+
 // 展开体（场景名输入 / 本片摘要 textarea / 本片对话内容，均为失焦自动保存）。
 function renderSummarySlices(summary) {

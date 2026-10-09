@@ -94,6 +94,7 @@ function addMsgEl(role, text, markdown = true, msgIndex = null, files = null, an
   // 每行容器：包裹气泡 + 气泡外的操作条
   const row = document.createElement("div");
   row.className = "msg-row " + role;
+  row.dataset.msgIndex = String(msgIndex);
   const div = document.createElement("div");
   div.className = "msg " + role;
   if (markdown && window.marked) {
@@ -232,7 +233,7 @@ function defaultSceneName(msgIndex) {
 // 弹出分场命名输入（原生 prompt，显式确认）。取消返回 null；返回裁剪后的名称（可空串）。
 function promptSceneLabel(msgIndex, current) {
   const tip = current === undefined
-    ? "分场名称（留空 = " + defaultSceneName(msgIndex) + "）："
+    ? "分场名称（留空 = 第 N 场，按锚点顺序自动编号）："
     : "修改分场名称（留空 = " + defaultSceneName(msgIndex) + "）：";
   const name = prompt(tip, current === undefined ? "" : current);
   if (name === null) return null;
@@ -256,20 +257,47 @@ async function addSceneBreak(row, msgIndex, existingLabel) {
       sceneAnchors.push(msgIndex);
       sceneAnchors.sort((a, b) => a - b);
     }
+    // 首个锚点打在中间时，后端自动在首条 user 消息补「开场锚点」：
+    // 首轮到本锚点整段成一个切片。先登记开场锚点并补画其分割线，
+    // 再插入本锚点分割线——保证默认命名按锚点顺序计数（本锚点为「第 2 场」）。
+    if (r.first_anchor && r.first_anchor.added) {
+      const faIdx = r.first_anchor.index;
+      if (!sceneAnchors.includes(faIdx)) {
+        sceneAnchors.push(faIdx);
+        sceneAnchors.sort((a, b) => a - b);
+      }
+      const faRow = document.querySelector('.chat-box .msg-row.user[data-msg-index="' + faIdx + '"]');
+      if (faRow && !document.querySelector('.scene-divider[data-index="' + faIdx + '"]')) {
+        faRow.parentNode.insertBefore(buildSceneDivider("", faIdx), faRow);
+      }
+    }
     // 移除旧分割线（编辑场景）后在消息行前插入新的
     const old = document.querySelector('.scene-divider[data-index="' + msgIndex + '"]');
     if (old) old.remove();
     row.parentNode.insertBefore(buildSceneDivider(label, msgIndex), row);
-    showToast("已分场");
+    if (r.first_anchor && r.first_anchor.added) {
+      showToast("已分场（首条消息已自动补开场锚点）");
+    } else {
+      showToast("已分场");
+    }
     // 切片自动总结（管理面板开关开启时生效）：打锚点即自动总结前一个切片。
-    // fire-and-forget 静默执行：开关关闭后端返回 400，失败不打扰用户。
+    // 失败一律提示（含开关未开启），成功后刷新面板切片列表。
     const ak = loadApiKey();
     if (ak) {
       fetch("/api/sessions/" + currentSessionId + "/summary-slices-run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ api_key: ak }),
-      }).catch(() => {});
+      })
+        .then((res) => res.json())
+        .then((j) => {
+          if (j && j.error) {
+            showToast("切片自动总结：" + j.error);
+          } else if (window.syncSlicesAfterRun) {
+            window.syncSlicesAfterRun();
+          }
+        })
+        .catch(() => {});
     }
   } catch (_) {
     showToast("分场失败");

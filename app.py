@@ -432,7 +432,7 @@ def _run_memory_maintenance(api_key, sid, username):
     try:
         if memory_engine.should_auto_summary(username, sid, stored_msgs):
             memory_engine.run_summary(api_key, username, sid, stored_msgs)
-        if bool(((storage.get_session_memory(username, sid) or {}).get("summary") or {}).get("slice_auto")):
+        if bool(((storage.get_session_memory(username, sid) or {}).get("summary") or {}).get("slice_auto", True)):
             memory_engine.run_summary_slices(api_key, username, sid, stored_msgs)
     except Exception:  # noqa: BLE001
         app.logger.exception("剧情摘要自动总结失败")
@@ -726,7 +726,7 @@ def api_summary_config(sid):
         return jsonify({
             "slice_rounds": s.get("slice_rounds"),
             "active": s.get("active", "text"),
-            "slice_auto": s.get("slice_auto", False),
+            "slice_auto": s.get("slice_auto", True),
             "enabled": s.get("enabled", True),
         })
     data = request.get_json(force=True, silent=True) or {}
@@ -745,7 +745,7 @@ def api_summary_config(sid):
     return jsonify({
         "slice_rounds": s.get("slice_rounds"),
         "active": s.get("active", "text"),
-        "slice_auto": s.get("slice_auto", False),
+        "slice_auto": s.get("slice_auto", True),
         "enabled": s.get("enabled", True),
     })
 
@@ -838,7 +838,7 @@ def api_summary_slices_run(sid):
     s = (storage.get_session_memory(username, sid) or {}).get("summary") or {}
     if not s.get("enabled", True):
         return jsonify({"error": "剧情摘要已关闭"}), 400
-    if not s.get("slice_auto", False):
+    if not s.get("slice_auto", True):
         return jsonify({"error": "切片自动总结未开启"}), 400
     result = memory_engine.run_summary_slices(api_key, username, sid, stored["messages"])
     if not result.get("ok"):
@@ -1032,7 +1032,7 @@ def api_refresh_memory(sid):
         errors.append(f"剧情总结失败: {e}")
     # 切片线：增量落袋新切片（自动总结开关 slice_auto 开启时才随刷新自动跑；
     # 关闭时仅支持锚点触发与手动单片重总结）
-    if bool(((storage.get_session_memory(username, sid) or {}).get("summary") or {}).get("slice_auto")):
+    if bool(((storage.get_session_memory(username, sid) or {}).get("summary") or {}).get("slice_auto", True)):
         try:
             memory_engine.run_summary_slices(api_key, username, sid, stored["messages"])
         except Exception as e:  # noqa: BLE001
@@ -1167,7 +1167,14 @@ def api_scene_break(sid, index):
     )
     if message is None:
         return jsonify({"error": "会话不存在、下标越界或该消息不是用户消息"}), 404
-    return jsonify({"ok": True, "message": message})
+    # 打锚点时确保存在「开场锚点」：首个锚点打在中间（前面无任何锚点）时，
+    # 自动给首条 user 消息补一个锚点，使「首轮 → 第一个用户锚点」整段成一个切片
+    first_anchor = storage.ensure_first_anchor(username, sid) if scene_break else None
+    return jsonify({
+        "ok": True,
+        "message": message,
+        "first_anchor": first_anchor or {"added": False, "index": -1},
+    })
 
 
 @app.route("/api/sessions/<sid>/msg", methods=["POST"])
