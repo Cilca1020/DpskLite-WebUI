@@ -425,10 +425,11 @@ def _run_memory_maintenance(api_key, sid, username):
         memory_engine.extract_facts_for_session(api_key, username, sid, stored_msgs)
     except Exception:  # noqa: BLE001
         app.logger.exception("动态关键事实抽取失败")
-    # ② 剧情摘要：达到阈值自动总结
+    # ② 剧情摘要：文本线达到阈值自动总结（N 轮滚动合并）；切片线独立增量落袋（无新片零调用）
     try:
         if memory_engine.should_auto_summary(username, sid, stored_msgs):
             memory_engine.run_summary(api_key, username, sid, stored_msgs)
+        memory_engine.run_summary_slices(api_key, username, sid, stored_msgs)
     except Exception:  # noqa: BLE001
         app.logger.exception("剧情摘要自动总结失败")
 
@@ -675,9 +676,9 @@ def api_facts_item(sid):
 
 @app.route("/api/sessions/<sid>/summary", methods=["POST"])
 def api_run_summary(sid):
-    """手动触发一次剧情总结。body: {"slice_rounds": int, "full": bool, "text_only": bool}。
-    text_only=True：只重写整份摘要文本，不写切片实体、不推进进度（文本分页「重新总结」）。
-    full=True：忽略上次总结点与旧切片，从全部历史重新生成并全量重建切片。"""
+    """手动触发一次剧情摘要（文本线）。body: {"slice_rounds": int, "full": bool}。
+    full=True（重新总结）：忽略上次总结点与旧摘要文本，从全部历史重新生成并覆盖
+    整份摘要文本；不读写切片实体（切片与文本摘要完全独立）。"""
     username = session["username"]
     data = request.get_json(force=True, silent=True) or {}
     api_key = str(data.get("api_key") or "").strip()
@@ -698,7 +699,6 @@ def api_run_summary(sid):
     result = memory_engine.run_summary(
         api_key, username, sid, stored["messages"],
         slice_rounds=slice_rounds, full=bool(data.get("full")),
-        text_only=bool(data.get("text_only")),
     )
     if not result["ok"]:
         return jsonify({"error": result.get("error", "总结失败")}), 502
@@ -966,7 +966,7 @@ def api_refresh_memory(sid):
         app.logger.exception("手动刷新：事实抽取失败")
         errors.append(f"事实抽取失败: {e}")
 
-    # ② 剧情摘要：强制增量总结（手动刷新不依赖自动阈值）
+    # ② 剧情摘要：强制增量总结（手动刷新不依赖自动阈值；文本线 + 切片线独立运行）
     try:
         r = memory_engine.run_summary(api_key, username, sid, stored["messages"])
         if r.get("ok"):
@@ -976,6 +976,12 @@ def api_refresh_memory(sid):
     except Exception as e:  # noqa: BLE001
         app.logger.exception("手动刷新：剧情总结失败")
         errors.append(f"剧情总结失败: {e}")
+    # 切片线：增量落袋新切片（与文本摘要独立）
+    try:
+        memory_engine.run_summary_slices(api_key, username, sid, stored["messages"])
+    except Exception as e:  # noqa: BLE001
+        app.logger.exception("手动刷新：切片总结失败")
+        errors.append(f"切片总结失败: {e}")
 
     return jsonify({
         "facts": facts_result,

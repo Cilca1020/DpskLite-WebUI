@@ -516,24 +516,89 @@ def merge_summary(api_key, old_summary, new_slices_text):
         return old
 
 
-def run_summary(api_key, username, sid, stored_msgs, slice_rounds=None, full=False, text_only=False):
-    """执行一次剧情总结：把对话切片，逐片总结为持久化切片实体（摘要按片存储）。
+def run_summary(api_key, username, sid, stored_msgs, slice_rounds=None, full=False):
+    """执行一次剧情摘要（文本线）：把对话按 N 轮切片，逐片总结再合并成整份摘要文本。
+
+    文本摘要与切片功能完全独立：不读写切片实体（summary.slices）、不受场景锚点
+    影响，只维护 summary.text 与进度 summary.last_round，与未加切片功能前的
+    「每 N 轮总结一次」滚动总结行为一致。
+
+    增量策略（full=False，默认）：从上次总结到的轮次 last_round 之后开始切片，
+    避免重复总结旧内容，再把新切片摘要与旧摘要合并成一份更新的剧情摘要。
+
+    full=True（重新总结）：忽略上次总结点与旧摘要，把全部历史从头切片总结，
+    生成一份全新的完整摘要并覆盖旧文本（用于 LLM 结果不佳时强制重算）。
+
+    返回 {"ok": bool, "summary": str, "error": str}。
+    slice_rounds: 切片宽度（每次调用喂给模型的轮数）；None 用配置默认。
+    """
+    if not (username and sid):
+        return {"ok": False, "error": "缺少会话信息"}
+    memory = _get_memory(username, sid)
+    if memory is None:
+        return {"ok": False, "error": "会话不存在"}
+    stored = stored_msgs if stored_msgs is not None else (
+        storage.get_session(username, sid).get("messages", []) if storage.get_session(username, sid) else []
+    )
+    chat = [
+        {"role": m.get("role"), "content": (m.get("content") or "").strip()}
+        for m in stored
+        if m.get("role") in ("user", "assistant") and (m.get("content") or "").strip()
+    ]
+    if not chat:
+        return {"ok": False, "error": "没有可总结的对话"}
+    old_summary = "" if full else (memory.get("summary") or {}).get("text", "")
+    last_round = 0 if full else int((memory.get("summary") or {}).get("last_round") or 0)
+    # 从上次总结点之后的消息开始（增量）；full 时从第 0 轮开始（全量重跑）
+    start_idx = _index_of_round(chat, last_round)
+    new_chat = chat[start_idx:]
+    if not new_chat:
+        return {"ok": True, "summary": old_summary}
+    # 切片宽度（轮数）：显式参数优先 > 会话配置 slice_rounds > 全局默认。
+    # 上限给一个安全的经验值（如 200 轮），避免传超大整数。
+    try:
+        if slice_rounds is not None:
+            slice_n = int(slice_rounds)
+        else:
+            conf = (memory.get("summary") or {}).get("slice_rounds")
+            slice_n = int(conf) if conf is not None else config.SUMMARY_SLICE_ROUNDS
+    except (TypeError, ValueError):
+        slice_n = config.SUMMARY_SLICE_ROUNDS
+    slice_n = max(1, min(slice_n, 200))
+    # 切片：每 slice_n 轮一块（一轮 = 一条 user + 紧随其后的 assistant）
+    slices = _slice_chat(new_chat, slice_n)
+    # 逐片总结
+    slice_texts = []
+    for s in slices:
+        st = summarize_slice(api_key, s)
+        if st:
+            slice_texts.append(st)
+    new_slices_text = "\n\n".join(slice_texts)
+    new_summary = merge_summary(api_key, old_summary, new_slices_text)
+    if not new_summary:
+        return {"ok": False, "error": "总结生成失败（LLM 不可用或返回空）"}
+    # 截断到上限
+    new_summary = new_summary[: config.SUMMARY_MAX_CHARS]
+    storage.set_session_summary(username, sid, new_summary, last_round=_count_rounds(chat))
+    return {"ok": True, "summary": new_summary}
+
+
+def run_summary_slices(api_key, username, sid, stored_msgs, slice_rounds=None, full=False):
+    """执行一次切片总结（切片线）：把对话切片，逐片总结为持久化切片实体。
+
+    切片线与文本摘要完全独立：只读写 summary.slices，不修改整份 text 与
+    summary.last_round（二者归文本线 run_summary 维护）。
 
     切片实体化：切片在全量对话上计算（每片带绝对轮次范围 start/end_round），落袋后
-    持久化为 summary.slices（{id,name,text,start_round,end_round,edited}），整份 text
-    由各片拼接派生（见 storage._summary_slices_text）。增量总结 = 前缀对齐 + 只总结
-    新落袋的片（不再 LLM 合并整份文本）；切片划分变化（锚点增删 / 消息删除影响已
-    落袋区）时自动重建受影响区段，手动编辑过的片（edited）按范围重叠继承文本。
+    持久化为 summary.slices（{id,name,text,start_round,end_round,edited}）。增量总结 =
+    前缀对齐 + 只总结新落袋的片（不再 LLM 合并整份文本）；切片划分变化（锚点增删 /
+    消息删除影响已落袋区）时自动重建受影响区段，手动编辑过的片（edited）按范围重叠
+    继承文本。锚点为硬边界，锚点段不超上限时整段总结，场景名记录在实体 name 上。
 
     增量策略（full=False，默认）：最后一个切片是「开放尾段」（剧情仍在推进、未被
-    锚点闭合），本次不总结；无新落袋片时直接返回旧摘要。
+    锚点闭合），本次不总结；无新落袋片时直接返回（零 LLM 调用）。
 
-    full=True（重新总结）：忽略已有切片实体，把全部历史（含最后的开放尾段）从头
-    切片总结并全量重建（手动编辑过的片文本会被覆盖，前端弹窗提示）。
-
-    text_only=True（文本摘要独立重建）：与切片分页完全解耦——按同样规则切片逐片
-    总结，但结果只在内存中拼接为整份文本，仅覆盖 summary.text；不写切片实体、
-    不推进 last_round，切片列表与自动总结进度不受影响。
+    full=True：忽略已有切片实体，把全部历史（含最后的开放尾段）从头切片总结并全量重建。
 
     返回 {"ok": bool, "summary": str, "error": str}。
     slice_rounds: 切片宽度（每次调用喂给模型的轮数）；None 用配置默认。
@@ -559,7 +624,6 @@ def run_summary(api_key, username, sid, stored_msgs, slice_rounds=None, full=Fal
     if not chat:
         return {"ok": False, "error": "没有可总结的对话"}
     old = memory.get("summary") or {}
-    old_text = old.get("text", "")
     # 已落袋切片实体（full 重建时视为空 → 全部重算）
     old_entities = [] if full else list(old.get("slices") or [])
     # 切片宽度（轮数）：显式参数优先 > 会话配置 slice_rounds > 全局默认。
@@ -587,27 +651,10 @@ def run_summary(api_key, username, sid, stored_msgs, slice_rounds=None, full=Fal
             r += 1
         m["_rid"] = r
     slices = _build_anchor_slices(chat, slice_n, max_seg)
-    # 文本摘要独立重建：只重写整份 text，与切片实体 / 自动总结进度完全解耦
-    if text_only:
-        parts = []
-        for s in slices:
-            t = summarize_slice(api_key, s["messages"])
-            if not t:
-                return {"ok": False, "error": "总结生成失败（LLM 不可用或返回空）"}
-            label = str(s.get("label") or "").strip()
-            parts.append(("【" + label + "】" if label else "") + t)
-        text = "\n".join(parts)
-        # 超长压缩：与切片路径同样把超限文本压成单段
-        if len(text) > config.SUMMARY_MAX_CHARS:
-            merged = merge_summary(api_key, "", text)
-            if merged:
-                text = merged
-        storage.set_session_summary(username, sid, text)
-        return {"ok": True, "summary": text}
     # 落袋集合：增量跳过最后的开放尾段；full 连尾段一起总结
     settled = slices if full else slices[:-1]
     if not settled:
-        return {"ok": True, "summary": old_text}
+        return {"ok": True, "summary": ""}
     # 前缀对齐：与已存实体逐片比对绝对轮次范围，找出真正新增 / 变化的片
     k = 0
     while (k < len(old_entities) and k < len(settled)
@@ -627,9 +674,9 @@ def run_summary(api_key, username, sid, stored_msgs, slice_rounds=None, full=Fal
     pending = settled[k:]
     if not pending:
         if name_dirty:
-            storage.set_session_summary_slices(username, sid, keep, last_round=None)
-            return {"ok": True, "summary": storage._summary_slices_text(keep)}
-        return {"ok": True, "summary": old_text}
+            storage.set_session_summary_slices(username, sid, keep)
+            return {"ok": True, "summary": ""}
+        return {"ok": True, "summary": ""}
     # 重建继承池：划分变化后被取代的旧片（edited 者的文本按范围重叠继承）
     inherit_pool = [e for e in old_entities[k:] if e.get("edited")]
     new_entities = []
@@ -670,9 +717,7 @@ def run_summary(api_key, username, sid, stored_msgs, slice_rounds=None, full=Fal
                 "end_round": entities[-1]["end_round"],
                 "edited": False, "ts": time.time(),
             }]
-    # 进度推进到最后一个成功处理的片末尾（开放尾段与失败片不计入）
-    new_last = new_entities[-1]["end_round"]
-    storage.set_session_summary_slices(username, sid, entities, last_round=new_last)
+    storage.set_session_summary_slices(username, sid, entities)
     return {"ok": True, "summary": storage._summary_slices_text(entities)}
 
 
@@ -779,13 +824,11 @@ def _count_rounds(chat):
 
 
 def should_auto_summary(username, sid, stored_msgs=None):
-    """判断是否达到自动总结阈值（存在已闭合的未总结切片）。
+    """判断是否达到自动总结阈值（新增轮数 >= 切片宽度 N）。
 
-    切片策略与 run_summary 一致（锚点为硬边界 + 超上限细分）。切片后最后一个
-    切片是开放尾段（剧情仍在推进）；除它之外还存在其它切片（被锚点闭合的段 /
-    攒满切片宽度的段）即触发一次自动总结。
-    切片宽度优先读会话 memory.summary.slice_rounds，回退 config.SUMMARY_SLICE_ROUNDS。
-    剧情摘要开关或自动总结开关（summary.auto）关闭时一律不触发。
+    与文本线滚动总结节奏一致：自上次总结点（summary.last_round）之后新积累的
+    轮数达到 slice_rounds 即触发一次总结。切片宽度优先读会话 memory.summary.slice_rounds，
+    回退 config.SUMMARY_SLICE_ROUNDS。剧情摘要开关或自动总结开关（summary.auto）关闭时一律不触发。
     """
     memory = _get_memory(username, sid)
     if memory is None:
@@ -804,12 +847,6 @@ def should_auto_summary(username, sid, stored_msgs=None):
         slice_rounds = 0
     if slice_rounds <= 0:
         slice_rounds = config.SUMMARY_SLICE_ROUNDS
-    try:
-        max_seg = int(summary.get("max_slice_rounds") or 0)
-    except (TypeError, ValueError):
-        max_seg = 0
-    if max_seg <= 0:
-        max_seg = config.SUMMARY_MAX_SEGMENT_ROUNDS
     stored = stored_msgs if stored_msgs is not None else (
         storage.get_session(username, sid).get("messages", []) if storage.get_session(username, sid) else []
     )
@@ -819,12 +856,7 @@ def should_auto_summary(username, sid, stored_msgs=None):
     ]
     total_rounds = _count_rounds(chat)
     last_round = int(summary.get("last_round") or 0)
-    if total_rounds <= last_round:
-        return False
-    start_idx = _index_of_round(chat, last_round)
-    slices = _build_anchor_slices(chat[start_idx:], slice_rounds, max_seg)
-    # 除开放尾段外还有切片 → 有已闭合的新内容待总结
-    return len(slices) > 1
+    return (total_rounds - last_round) >= slice_rounds
 
 
 def extract_facts_for_session(api_key, username, sid, stored_msgs, full=False, auto=True):

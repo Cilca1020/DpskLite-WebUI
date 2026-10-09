@@ -352,7 +352,7 @@
                 <span class="switch-track"><span class="switch-thumb"></span></span>
               </label>
             </div>
-            <span class="param-hint memory-sub-hint">开启时每积累一个完整切片（切片轮数轮）自动总结剧情进展；关闭后仅支持「重新总结」和手动编辑。</span>
+            <span class="param-hint memory-sub-hint">开启时每积累 N 轮（切片轮数）自动总结一次剧情；关闭后仅支持手动「重新总结」和编辑。</span>
             <textarea id="memorySummaryText" class="memory-summary-text" rows="5" placeholder="暂无摘要。可直接编辑（失焦自动保存），或点击「重新总结」从全部历史生成。"></textarea>
             <div class="memory-summary-meta" id="memorySummaryMeta"></div>
             <div class="memory-actions">
@@ -360,16 +360,19 @@
                 <span>切片轮数</span>
                 <input id="memorySummarySlice" type="number" min="1" max="200" step="1" />
               </label>
+              <button id="memorySummaryRunBtn" class="mini-btn accent" type="button">重新总结</button>
+            </div>
+            <span class="param-hint">在这里存储对话内容梗概，每积累 N 轮（切片轮数）自动总结一次；「重新总结」从全部历史重新生成整份文本，与切片功能无关。<br>「切片摘要」分页与切片管理面板是独立功能：打分场锚点分场，自动总结后按场景落袋。</span>
+          </div>
+          <div id="summaryPageSlice" class="hidden">
+            <div class="slice-mini-list" id="memorySliceMiniList"></div>
+            <div class="slice-opts-row">
               <label class="memory-num-field">
                 <span>锚点段上限</span>
                 <input id="memorySummaryMaxSlice" type="number" min="1" max="200" step="1" />
               </label>
-              <button id="memorySummaryRunBtn" class="mini-btn accent" type="button">重新总结</button>
+              <span class="param-hint">单个场景（锚点段）不超过此轮数时整段成片，超过则细分。</span>
             </div>
-            <span class="param-hint">在这里存储对话内容梗概。<br>每积累一个完整切片（切片轮数轮）自动总结一次；关闭自动总结后仅手动。<br>在消息上点旗标可「分场」：锚点为硬边界，锚点段不超上限时整段总结，摘要行带【场景名】前缀。</span>
-          </div>
-          <div id="summaryPageSlice" class="hidden">
-            <div class="slice-mini-list" id="memorySliceMiniList"></div>
             <button id="memorySliceManageBtn" class="mini-btn" type="button" title="打开切片管理面板：查看每片对话内容、编辑场景名与本片摘要"><span class="btn-ic" id="memorySliceManageIc"></span>切片管理</button>
           </div>
         </section>

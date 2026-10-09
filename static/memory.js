@@ -210,7 +210,7 @@ function renderSummarySlices(summary) {
     list.innerHTML = "";
     const empty = document.createElement("p");
     empty.className = "memory-empty-text";
-    empty.textContent = "暂无切片：剧情总结落袋后这里会出现切片列表。打分场锚点并点「重新总结」可立即生成。";
+    empty.textContent = "暂无切片：自动总结落袋后这里会出现切片列表；在消息上打分场锚点可控制分场边界。";
     list.appendChild(empty);
     return;
   }
@@ -236,7 +236,11 @@ function renderSummarySlices(summary) {
     item.appendChild(head);
 
     const body = document.createElement("div");
-    body.className = "memory-slice-body" + (isOpen ? "" : " hidden");
+    body.className = "memory-slice-body";
+    // 展开动画：外层 grid 0fr/1fr 过渡裁剪，内容放 inner（padding/border 在 inner 上过渡）
+    const inner = document.createElement("div");
+    inner.className = "memory-slice-body-inner";
+    body.appendChild(inner);
     const nameField = document.createElement("label");
     nameField.className = "memory-slice-field";
     const nameSpan = document.createElement("span");
@@ -274,9 +278,9 @@ function renderSummarySlices(summary) {
     msgsBox.dataset.loaded = "0";
     msgsBox.textContent = "（对话内容加载中…）";
 
-    body.appendChild(nameField);
-    body.appendChild(textField);
-    body.appendChild(msgsBox);
+    inner.appendChild(nameField);
+    inner.appendChild(textField);
+    inner.appendChild(msgsBox);
     item.appendChild(body);
     list.appendChild(item);
     if (isOpen) loadSliceMessages(sl.id, msgsBox);
@@ -292,7 +296,7 @@ function renderSliceMiniList(summary) {
   if (!slices.length) {
     const empty = document.createElement("p");
     empty.className = "memory-empty-text";
-    empty.textContent = "暂无切片：剧情总结落袋后这里会出现切片列表。打分场锚点并点「重新总结」可立即生成。";
+    empty.textContent = "暂无切片：自动总结落袋后这里会出现切片列表；在消息上打分场锚点可控制分场边界。";
     list.appendChild(empty);
     return;
   }
@@ -321,22 +325,19 @@ function renderSliceMiniList(summary) {
   });
 }
 
-// 展开 / 收起某个切片；首次展开时懒加载该片的对话内容
+// 展开 / 收起某个切片（grid 0fr/1fr 过渡动画）；首次展开时懒加载该片的对话内容
 async function toggleSliceItem(sliceId) {
   const item = document.querySelector('#memorySliceList .memory-slice-item[data-id="' + sliceId + '"]');
   if (!item) return;
-  const body = item.querySelector(".memory-slice-body");
-  const opening = body.classList.contains("hidden");
+  const opening = !item.classList.contains("open");
   MEMORY_SLICE_OPEN = opening ? sliceId : null;
-  document.querySelectorAll("#memorySliceList .memory-slice-item").forEach((el) => {
-    el.classList.remove("open");
-    const b = el.querySelector(".memory-slice-body");
-    if (b) b.classList.add("hidden");
+  // 单开互斥：收起其它已展开项
+  document.querySelectorAll("#memorySliceList .memory-slice-item.open").forEach((el) => {
+    if (el !== item) el.classList.remove("open");
   });
+  item.classList.toggle("open", opening);
   if (opening) {
-    item.classList.add("open");
-    body.classList.remove("hidden");
-    const box = body.querySelector(".memory-slice-msgs");
+    const box = item.querySelector(".memory-slice-msgs");
     if (box && box.dataset.loaded === "0") await loadSliceMessages(sliceId, box);
   }
 }
@@ -1233,13 +1234,13 @@ function bindMemorySummary() {
       if (!currentSessionId) return showToast("请先选择对话");
       const apiKey = loadApiKey();
       if (!apiKey) return showToast("请先在「参数」页填写 API Key");
-      // 文本摘要独立重建：只重写整份摘要文本，不影响切片实体与自动总结进度
+      // 重新总结：整份摘要文本全量重建（N 轮滚动总结），与切片实体完全无关
       runBtn.disabled = true;
       runBtn.textContent = "总结中…";
       try {
-        const r = await apiPost("/api/sessions/" + currentSessionId + "/summary", { api_key: apiKey, text_only: true });
+        const r = await apiPost("/api/sessions/" + currentSessionId + "/summary", { api_key: apiKey, full: true });
         if (r && r.error) return showToast(r.error || "总结失败");
-        showToast("文本摘要已重新生成");
+        showToast("摘要已重新生成");
         await loadMemoryPanel();
       } catch (_) {
         showToast("总结失败");

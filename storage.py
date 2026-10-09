@@ -725,10 +725,11 @@ def set_session_summary(username, sid, text, last_round=None):
 
 
 def set_session_summary_slices(username, sid, slices, last_round=None):
-    """全量覆盖持久化切片实体列表，并把整份 text 重派生为各片拼接。
+    """全量覆盖持久化切片实体列表（切片线专用，不改动整份 text）。
 
     slices 为 [{id, name, text, start_round, end_round, edited, ts}]（非法条目跳过）；
-    last_round 为已处理到的轮次（None 不更新）。返回新 memory 或 None。
+    last_round 为已处理到的轮次（None 不更新；整份 text 与 last_round 归文本线维护）。
+    返回新 memory 或 None。
     """
     memory = get_session_memory(username, sid)
     if memory is None:
@@ -736,7 +737,6 @@ def set_session_summary_slices(username, sid, slices, last_round=None):
     old = memory.get("summary") or {}
     s = _parse_summary(old)
     s["slices"] = _parse_summary_slices(slices)
-    s["text"] = _summary_slices_text(s["slices"])
     s["summarized_ts"] = time.time()
     if last_round is not None:
         s["last_round"] = max(0, int(last_round))
@@ -748,7 +748,7 @@ def set_session_summary_slices(username, sid, slices, last_round=None):
 def update_summary_slice(username, sid, slice_id, name=None, text=None):
     """更新单个切片实体的名称或摘要（面板编辑入口）。
 
-    任一字段更新后该片标记 edited=True，且整份 text 重派生。
+    任一字段更新后该片标记 edited=True（不改动整份 text，文本归文本线维护）。
     name/text 传 None 表示不更新该项。返回 {"memory", "slice"} 或 None（会话/切片不存在）。
     """
     memory = get_session_memory(username, sid)
@@ -765,7 +765,6 @@ def update_summary_slice(username, sid, slice_id, name=None, text=None):
         target["text"] = str(text).strip()
         target["edited"] = True
     target["ts"] = time.time()
-    s["text"] = _summary_slices_text(s["slices"])
     memory["summary"] = s
     save_session_memory(username, sid, memory)
     return {"memory": memory, "slice": target}
