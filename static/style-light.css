@@ -1956,27 +1956,35 @@ html.theme-transition *::after {
 .sidebar::-webkit-scrollbar,
 .chat-box::-webkit-scrollbar,
 .settings-body::-webkit-scrollbar,
-.settings-panel::-webkit-scrollbar {
+.settings-panel::-webkit-scrollbar,
+.modal-body::-webkit-scrollbar,
+.memory-slice-msgs::-webkit-scrollbar {
   width: 10px;
   height: 10px;
 }
 .sidebar::-webkit-scrollbar-track,
 .chat-box::-webkit-scrollbar-track,
 .settings-body::-webkit-scrollbar-track,
-.settings-panel::-webkit-scrollbar-track {
+.settings-panel::-webkit-scrollbar-track,
+.modal-body::-webkit-scrollbar-track,
+.memory-slice-msgs::-webkit-scrollbar-track {
   background: #eceef1;
 }
 .sidebar::-webkit-scrollbar-thumb,
 .chat-box::-webkit-scrollbar-thumb,
 .settings-body::-webkit-scrollbar-thumb,
-.settings-panel::-webkit-scrollbar-thumb {
+.settings-panel::-webkit-scrollbar-thumb,
+.modal-body::-webkit-scrollbar-thumb,
+.memory-slice-msgs::-webkit-scrollbar-thumb {
   background: #c5c9d0;
   border-radius: 5px;
 }
 .sidebar::-webkit-scrollbar-thumb:hover,
 .chat-box::-webkit-scrollbar-thumb:hover,
 .settings-body::-webkit-scrollbar-thumb:hover,
-.settings-panel::-webkit-scrollbar-thumb:hover {
+.settings-panel::-webkit-scrollbar-thumb:hover,
+.modal-body::-webkit-scrollbar-thumb:hover,
+.memory-slice-msgs::-webkit-scrollbar-thumb:hover {
   background: #aab0b8;
 }
 

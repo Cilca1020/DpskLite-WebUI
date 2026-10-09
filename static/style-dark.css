@@ -60,26 +60,34 @@
 [data-theme="dark"] .sidebar::-webkit-scrollbar,
 [data-theme="dark"] .chat-box::-webkit-scrollbar,
 [data-theme="dark"] .settings-body::-webkit-scrollbar,
-[data-theme="dark"] .settings-panel::-webkit-scrollbar {
+[data-theme="dark"] .settings-panel::-webkit-scrollbar,
+[data-theme="dark"] .modal-body::-webkit-scrollbar,
+[data-theme="dark"] .memory-slice-msgs::-webkit-scrollbar {
   width: 10px;
   height: 10px;
 }
 [data-theme="dark"] .sidebar::-webkit-scrollbar-track,
 [data-theme="dark"] .chat-box::-webkit-scrollbar-track,
 [data-theme="dark"] .settings-body::-webkit-scrollbar-track,
-[data-theme="dark"] .settings-panel::-webkit-scrollbar-track {
+[data-theme="dark"] .settings-panel::-webkit-scrollbar-track,
+[data-theme="dark"] .modal-body::-webkit-scrollbar-track,
+[data-theme="dark"] .memory-slice-msgs::-webkit-scrollbar-track {
   background: #15171c;
 }
 [data-theme="dark"] .sidebar::-webkit-scrollbar-thumb,
 [data-theme="dark"] .chat-box::-webkit-scrollbar-thumb,
 [data-theme="dark"] .settings-body::-webkit-scrollbar-thumb,
-[data-theme="dark"] .settings-panel::-webkit-scrollbar-thumb {
+[data-theme="dark"] .settings-panel::-webkit-scrollbar-thumb,
+[data-theme="dark"] .modal-body::-webkit-scrollbar-thumb,
+[data-theme="dark"] .memory-slice-msgs::-webkit-scrollbar-thumb {
   background: #353a44;
   border-radius: 5px;
 }
 [data-theme="dark"] .sidebar::-webkit-scrollbar-thumb:hover,
 [data-theme="dark"] .chat-box::-webkit-scrollbar-thumb:hover,
 [data-theme="dark"] .settings-body::-webkit-scrollbar-thumb:hover,
-[data-theme="dark"] .settings-panel::-webkit-scrollbar-thumb:hover {
+[data-theme="dark"] .settings-panel::-webkit-scrollbar-thumb:hover,
+[data-theme="dark"] .modal-body::-webkit-scrollbar-thumb:hover,
+[data-theme="dark"] .memory-slice-msgs::-webkit-scrollbar-thumb:hover {
   background: #454c58;
 }
