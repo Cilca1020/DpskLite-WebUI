@@ -104,12 +104,6 @@ function renderMemoryPanel() {
   if (sliceInput && summary.slice_rounds !== undefined && summary.slice_rounds !== null) {
     sliceInput.value = summary.slice_rounds;
   }
-  const maxSliceInput = memEl("memorySummaryMaxSlice");
-  if (maxSliceInput) {
-    maxSliceInput.value = (summary.max_slice_rounds !== undefined && summary.max_slice_rounds !== null)
-      ? summary.max_slice_rounds
-      : 24;
-  }
   // 切片管理面板（持久化切片实体列表；无实体时隐藏）
   renderSummarySlices(summary);
   // 摘要卡「切片摘要」分页：只读列表 + 恢复当前分页选择
@@ -167,8 +161,6 @@ function refreshMemoryCardStates() {
   if (summaryAutoSwitch) summaryAutoSwitch.checked = summaryAutoOn;
   const summarySlice = memEl("memorySummarySlice");
   if (summarySlice) summarySlice.disabled = !summaryAutoOn;
-  const summaryMaxSlice = memEl("memorySummaryMaxSlice");
-  if (summaryMaxSlice) summaryMaxSlice.disabled = !summaryAutoOn;
 
   // ④ 向量记忆：开关由 main.js / chat.js（vmEnabled）管理，这里按可见开关态同步置灰与 top_k 禁用态
   const vectorSwitch = memEl("vmEnabled");
@@ -209,8 +201,8 @@ function renderSummarySlices(summary) {
     list.classList.remove("hidden");
     list.innerHTML = "";
     const empty = document.createElement("p");
-    empty.className = "memory-empty-text";
-    empty.textContent = "暂无切片：自动总结落袋后这里会出现切片列表；在消息上打分场锚点可控制分场边界。";
+    empty.className = "memory-empty-box";
+    empty.textContent = "暂无切片，添加锚点后可新建切片，用于区分不同话题/场景等。";
     list.appendChild(empty);
     return;
   }
@@ -295,8 +287,8 @@ function renderSliceMiniList(summary) {
   list.innerHTML = "";
   if (!slices.length) {
     const empty = document.createElement("p");
-    empty.className = "memory-empty-text";
-    empty.textContent = "暂无切片：自动总结落袋后这里会出现切片列表；在消息上打分场锚点可控制分场边界。";
+    empty.className = "memory-empty-box";
+    empty.textContent = "暂无切片，添加锚点后可新建切片，用于区分不同话题/场景等。";
     list.appendChild(empty);
     return;
   }
@@ -1189,17 +1181,6 @@ function bindMemorySummary() {
       saveSummaryConfig(body, sliceInput);
     });
   }
-  // 锚点段保留上限（轮）：锚点段不超过该值时整段总结，超过按切片轮数细分
-  const maxSliceInput = memEl("memorySummaryMaxSlice");
-  if (maxSliceInput) {
-    maxSliceInput.addEventListener("change", () => {
-      const v = parseInt(maxSliceInput.value, 10);
-      if (isNaN(v)) return loadMemoryPanel(); // 无效输入回读
-      const body = { max_slice_rounds: Math.max(1, Math.min(200, v)) };
-      maxSliceInput.value = body.max_slice_rounds;
-      saveSummaryConfig(body, maxSliceInput);
-    });
-  }
 
   // 摘要文本：编辑后失焦自动保存；清空并失焦 = 清除摘要（需确认）
   const summaryTextArea = memEl("memorySummaryText");
@@ -1318,8 +1299,6 @@ function bindMemoryMasterButtons() {
         const sCfg = memNew.summary || {};
         const sSlice = memEl("memorySummarySlice");
         if (sSlice && sCfg.slice_rounds != null) sSlice.value = sCfg.slice_rounds;
-        const sMaxSlice = memEl("memorySummaryMaxSlice");
-        if (sMaxSlice && sCfg.max_slice_rounds != null) sMaxSlice.value = sCfg.max_slice_rounds;
         refreshMemoryCardStates();
         showToast("一键配置已应用");
       } catch (_) {

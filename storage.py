@@ -259,7 +259,6 @@ def _parse_summary(s):
         "summarized_ts": None,
         "last_round": 0,
         "slice_rounds": config.SUMMARY_SLICE_ROUNDS,
-        "max_slice_rounds": config.SUMMARY_MAX_SEGMENT_ROUNDS,  # 锚点段保留上限（轮）
         "slices": [],     # 持久化切片实体（落袋切片）
         "enabled": True,  # ③ 剧情摘要开关（关闭时保留内容但停止注入/自动/手动总结）
         "auto": True,     # ③ 自动总结开关（总开关下一级；关闭时后台不自动总结，仅手动）
@@ -283,12 +282,6 @@ def _parse_summary(s):
     try:
         v = int(s.get("slice_rounds"))
         out["slice_rounds"] = max(1, min(v, 200))
-    except (TypeError, ValueError):
-        pass  # 保留默认
-    # 锚点段保留上限：>=1，上限给个安全值
-    try:
-        v = int(s.get("max_slice_rounds"))
-        out["max_slice_rounds"] = max(1, min(v, 200))
     except (TypeError, ValueError):
         pass  # 保留默认
     return out
@@ -770,8 +763,8 @@ def update_summary_slice(username, sid, slice_id, name=None, text=None):
     return {"memory": memory, "slice": target}
 
 
-def set_session_summary_config(username, sid, slice_rounds=None, enabled=None, max_slice_rounds=None):
-    """设置会话剧情摘要的触发参数（slice_rounds 切片宽度 / enabled 开关 / max_slice_rounds 锚点段上限）。
+def set_session_summary_config(username, sid, slice_rounds=None, enabled=None):
+    """设置会话剧情摘要的触发参数（slice_rounds 切片宽度 / enabled 开关）。
 
     只更新传入的参数，其余保留。返回新 memory 或 None（会话不存在）。
     """
@@ -784,13 +777,6 @@ def set_session_summary_config(username, sid, slice_rounds=None, enabled=None, m
         try:
             s = dict(s)
             s["slice_rounds"] = max(1, min(int(slice_rounds), 200))
-            changed = True
-        except (TypeError, ValueError):
-            pass
-    if max_slice_rounds is not None:
-        try:
-            s = dict(s)
-            s["max_slice_rounds"] = max(1, min(int(max_slice_rounds), 200))
             changed = True
         except (TypeError, ValueError):
             pass
@@ -841,7 +827,6 @@ def set_session_memory_switches(username, sid, facts_enabled=None, summary_enabl
         memory["facts_max_per_slice"] = config.FACT_MAX_PER_SLICE  # 每片抽取上限恢复默认
         s = dict(memory.get("summary") or {})
         s["slice_rounds"] = config.SUMMARY_SLICE_ROUNDS
-        s["max_slice_rounds"] = config.SUMMARY_MAX_SEGMENT_ROUNDS
         memory["summary"] = _parse_summary(s)
         vec = dict(memory.get("vector") or _parse_vm(None))
         vec["top_k"] = None          # 恢复默认召回

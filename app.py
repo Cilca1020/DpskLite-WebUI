@@ -709,9 +709,8 @@ def api_run_summary(sid):
 def api_summary_config(sid):
     """读取 / 设置会话剧情摘要的触发参数。
 
-    GET 返回当前配置；POST body 可选 {"slice_rounds": int, "enabled": bool,
-    "max_slice_rounds": int（锚点段保留上限，轮）}，传哪个更新哪个。
-    自动总结以切片为单位：存在已闭合的未总结切片时触发。
+    GET 返回当前配置；POST body 可选 {"slice_rounds": int, "enabled": bool}，
+    传哪个更新哪个。
     """
     username = session["username"]
     if request.method == "GET":
@@ -721,24 +720,21 @@ def api_summary_config(sid):
         s = mem.get("summary") or {}
         return jsonify({
             "slice_rounds": s.get("slice_rounds"),
-            "max_slice_rounds": s.get("max_slice_rounds", config.SUMMARY_MAX_SEGMENT_ROUNDS),
             "enabled": s.get("enabled", True),
         })
     data = request.get_json(force=True, silent=True) or {}
     slice_rounds = data.get("slice_rounds")
-    max_slice_rounds = data.get("max_slice_rounds")
     enabled = data.get("enabled")
-    if slice_rounds is None and enabled is None and max_slice_rounds is None:
-        return jsonify({"error": "至少提供 slice_rounds / max_slice_rounds / enabled 之一"}), 400
+    if slice_rounds is None and enabled is None:
+        return jsonify({"error": "至少提供 slice_rounds / enabled 之一"}), 400
     mem = storage.set_session_summary_config(
-        username, sid, slice_rounds=slice_rounds, enabled=enabled, max_slice_rounds=max_slice_rounds
+        username, sid, slice_rounds=slice_rounds, enabled=enabled
     )
     if mem is None:
         return jsonify({"error": "会话不存在"}), 404
     s = mem.get("summary") or {}
     return jsonify({
         "slice_rounds": s.get("slice_rounds"),
-        "max_slice_rounds": s.get("max_slice_rounds", config.SUMMARY_MAX_SEGMENT_ROUNDS),
         "enabled": s.get("enabled", True),
     })
 

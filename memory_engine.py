@@ -586,6 +586,9 @@ def run_summary(api_key, username, sid, stored_msgs, slice_rounds=None, full=Fal
 def run_summary_slices(api_key, username, sid, stored_msgs, slice_rounds=None, full=False):
     """执行一次切片总结（切片线）：把对话切片，逐片总结为持久化切片实体。
 
+    切片功能默认关闭：会话中存在用户场景锚点（scene_break）时才启用；锚点即分场
+    硬边界，锚点段整段成片（场景级切片，name 记录场景名）。
+
     切片线与文本摘要完全独立：只读写 summary.slices，不修改整份 text 与
     summary.last_round（二者归文本线 run_summary 维护）。
 
@@ -593,7 +596,7 @@ def run_summary_slices(api_key, username, sid, stored_msgs, slice_rounds=None, f
     持久化为 summary.slices（{id,name,text,start_round,end_round,edited}）。增量总结 =
     前缀对齐 + 只总结新落袋的片（不再 LLM 合并整份文本）；切片划分变化（锚点增删 /
     消息删除影响已落袋区）时自动重建受影响区段，手动编辑过的片（edited）按范围重叠
-    继承文本。锚点为硬边界，锚点段不超上限时整段总结，场景名记录在实体 name 上。
+    继承文本。
 
     增量策略（full=False，默认）：最后一个切片是「开放尾段」（剧情仍在推进、未被
     锚点闭合），本次不总结；无新落袋片时直接返回（零 LLM 调用）。
@@ -601,7 +604,7 @@ def run_summary_slices(api_key, username, sid, stored_msgs, slice_rounds=None, f
     full=True：忽略已有切片实体，把全部历史（含最后的开放尾段）从头切片总结并全量重建。
 
     返回 {"ok": bool, "summary": str, "error": str}。
-    slice_rounds: 切片宽度（每次调用喂给模型的轮数）；None 用配置默认。
+    slice_rounds: 无锚点内容的切片宽度（每次调用喂给模型的轮数）；None 用配置默认。
     """
     if not (username and sid):
         return {"ok": False, "error": "缺少会话信息"}
@@ -623,6 +626,9 @@ def run_summary_slices(api_key, username, sid, stored_msgs, slice_rounds=None, f
             chat.append(c)
     if not chat:
         return {"ok": False, "error": "没有可总结的对话"}
+    # 切片功能默认关闭：存在用户锚点才启用（锚点删光后自动停跑，已落袋切片保留）
+    if not any(m.get("role") == "user" and m.get("scene_break") for m in chat):
+        return {"ok": True, "summary": ""}
     old = memory.get("summary") or {}
     # 已落袋切片实体（full 重建时视为空 → 全部重算）
     old_entities = [] if full else list(old.get("slices") or [])
@@ -636,21 +642,14 @@ def run_summary_slices(api_key, username, sid, stored_msgs, slice_rounds=None, f
     except (TypeError, ValueError):
         slice_n = config.SUMMARY_SLICE_ROUNDS
     slice_n = max(1, min(slice_n, 200))
-    # 锚点段保留上限（轮）：会话配置 summary.max_slice_rounds > 全局默认
-    try:
-        max_seg = int(old.get("max_slice_rounds") or 0)
-    except (TypeError, ValueError):
-        max_seg = 0
-    if max_seg <= 0:
-        max_seg = config.SUMMARY_MAX_SEGMENT_ROUNDS
-    # 全量切片（锚点为硬边界 + 段内超上限细分）；临时键 _rid 标注每条消息的绝对轮号
+    # 全量切片（锚点为硬边界，锚点段整段成片）；临时键 _rid 标注每条消息的绝对轮号
     # （1-based，user 消息递增），供片的 start/end_round 使用；chat 为本地拷贝，无污染。
     r = 0
     for m in chat:
         if m["role"] == "user":
             r += 1
         m["_rid"] = r
-    slices = _build_anchor_slices(chat, slice_n, max_seg)
+    slices = _build_anchor_slices(chat, slice_n)
     # 落袋集合：增量跳过最后的开放尾段；full 连尾段一起总结
     settled = slices if full else slices[:-1]
     if not settled:
@@ -787,35 +786,28 @@ def _split_at_anchors(chat):
     return segments
 
 
-def _build_anchor_slices(chat, slice_rounds, max_segment_rounds):
-    """构建锚点感知切片：用户锚点为硬边界，锚点段整段保留（不超上限时）。
+def _build_anchor_slices(chat, slice_rounds):
+    """构建锚点感知切片：用户锚点为硬边界，锚点段整段成片（场景级切片）。
 
     规则：
-    - 锚点段（以用户场景锚点开头的段）：轮数 <= max_segment_rounds 时整段成一切片
-      （场景级切片）；超过则按 slice_rounds 细分（宽度钳到不超过上限）。
-    - 无锚点内容（首个锚点之前 / 完全没用锚点的会话）：按 slice_rounds 细分，
-      与旧版固定切片行为一致（自动总结节奏不变）。
+    - 锚点段（以用户场景锚点开头的段）：整段成一切片（锚点 = 分场硬边界）
+    - 无锚点内容（首个锚点之前 / 完全没用锚点的会话）：按 slice_rounds 细分
     返回 [{"messages": [...], "label": str|None}]；label 为该切片所属段的场景标签
-    （锚点段的每个细分片都带标签，摘要行前缀用；事实抽取忽略 label）。
+    （锚点段每个切片都带标签；事实抽取忽略 label）。
     """
     if slice_rounds is None or slice_rounds <= 0:
         slice_rounds = config.SUMMARY_SLICE_ROUNDS
-    if max_segment_rounds is None or max_segment_rounds <= 0:
-        max_segment_rounds = config.SUMMARY_MAX_SEGMENT_ROUNDS
     slices = []
     for seg in _split_at_anchors(chat):
         msgs = seg["messages"]
         label = seg["label"]
-        if label is not None and _count_rounds(msgs) <= max_segment_rounds:
-            # 锚点段且未超上限：整段一个切片（场景级总结）
+        if label is not None:
+            # 锚点段：整段一个切片（场景级总结）
             slices.append({"messages": msgs, "label": label})
             continue
-        # 无锚点内容按切片宽度细分；超上限的锚点段按钳制后的宽度细分
-        width = slice_rounds
-        if label is not None:
-            width = max(1, min(slice_rounds, max_segment_rounds))
-        for part in _slice_chat(msgs, width):
-            slices.append({"messages": part, "label": label})
+        # 无锚点内容按切片宽度细分
+        for part in _slice_chat(msgs, slice_rounds):
+            slices.append({"messages": part, "label": None})
     return slices
 
 
@@ -920,18 +912,11 @@ def extract_facts_for_session(api_key, username, sid, stored_msgs, full=False, a
         max_per_slice = None
 
     # 找出结束轮次超过进度点的切片（部分重叠的切片整片重抽，靠去重兜底）
-    # 切片：锚点为硬边界（锚点段不超上限时整段一片），段内按切片宽度细分
-    # 锚点段保留上限与剧情摘要共用 summary.max_slice_rounds（用户可配）。
-    try:
-        max_seg = int((memory.get("summary") or {}).get("max_slice_rounds") or 0)
-    except (TypeError, ValueError):
-        max_seg = 0
-    if max_seg <= 0:
-        max_seg = config.SUMMARY_MAX_SEGMENT_ROUNDS
+    # 切片：锚点为硬边界（锚点段整段一片），无锚点内容按切片宽度细分
     # 增量（auto/手动单次）模式只处理【已闭合】的切片：最后一个开放尾片（剧情
     # 仍在推进）除外，避免每新增一轮就重抽尾片（导致每轮触发 LLM、事实膨胀）。
     # full=True（重新总结）仍处理全部历史含尾片。
-    slices = _build_anchor_slices(chat, slice_n, max_seg)
+    slices = _build_anchor_slices(chat, slice_n)
     if not full:
         if len(slices) <= 1:
             return None  # 只有开放尾片，无事可做
