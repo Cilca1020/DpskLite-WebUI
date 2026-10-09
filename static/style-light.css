@@ -1230,7 +1230,12 @@ body {
   white-space: pre-wrap;
   word-break: break-word;
 }
-#memorySliceManageBtn { width: 100%; }
+#memorySliceManageBtn {
+  width: 100%;
+  justify-content: center;
+  height: 30px;
+  line-height: 1;
+}
 .memory-slice-item {
   border: 1px solid var(--input-border);
   border-radius: 8px;
