@@ -261,6 +261,7 @@ def _parse_summary(s):
         "slice_rounds": config.SUMMARY_SLICE_ROUNDS,
         "slices": [],     # 持久化切片实体（落袋切片）
         "active": "text", # 注入模式（前端摘要卡分页选择）：text=整份文本 / slices=切片拼接
+        "slice_auto": False,  # 切片自动总结开关：开启后每打一个锚点自动总结前一个切片
         "enabled": True,  # ③ 剧情摘要开关（关闭时保留内容但停止注入/自动/手动总结）
         "auto": True,     # ③ 自动总结开关（总开关下一级；关闭时后台不自动总结，仅手动）
     }
@@ -270,6 +271,7 @@ def _parse_summary(s):
     out["text"] = str(s.get("text") or "").strip()
     out["enabled"] = bool(s.get("enabled", True))
     out["auto"] = bool(s.get("auto", True))
+    out["slice_auto"] = bool(s.get("slice_auto", False))
     out["slices"] = _parse_summary_slices(s.get("slices"))
     act = str(s.get("active") or "text").strip()
     out["active"] = act if act in ("text", "slices") else "text"
@@ -766,8 +768,31 @@ def update_summary_slice(username, sid, slice_id, name=None, text=None):
     return {"memory": memory, "slice": target}
 
 
-def set_session_summary_config(username, sid, slice_rounds=None, enabled=None, active=None):
-    """设置会话剧情摘要的触发参数（slice_rounds 切片宽度 / enabled 开关 / active 注入模式）。
+def rerun_summary_slice(username, sid, slice_id, text):
+    """用新总结替换指定切片的摘要（手动「重新总结」入口）。
+
+    与 update_summary_slice 的区别：text 来自 LLM 重新总结而非用户手编，
+    覆盖后 edited 重置为 False（重建/继承时不视为用户编辑保留）。
+    返回 {"memory", "slice"} 或 None（会话/切片不存在）。
+    """
+    memory = get_session_memory(username, sid)
+    if memory is None:
+        return None
+    s = _parse_summary(memory.get("summary") or {})
+    target = next((x for x in s["slices"] if x["id"] == str(slice_id)), None)
+    if target is None:
+        return None
+    target["text"] = str(text).strip()
+    target["edited"] = False
+    target["ts"] = time.time()
+    memory["summary"] = s
+    save_session_memory(username, sid, memory)
+    return {"memory": memory, "slice": target}
+
+
+def set_session_summary_config(username, sid, slice_rounds=None, enabled=None, active=None, slice_auto=None):
+    """设置会话剧情摘要的触发参数（slice_rounds 切片宽度 / enabled 开关 /
+    active 注入模式 / slice_auto 切片自动总结开关）。
 
     只更新传入的参数，其余保留。active 取 "text"（整份文本）或 "slices"（切片拼接）。
     返回新 memory 或 None（会话不存在）。
@@ -790,6 +815,10 @@ def set_session_summary_config(username, sid, slice_rounds=None, enabled=None, a
             s = dict(s)
             s["active"] = act
             changed = True
+    if slice_auto is not None:
+        s = dict(s)
+        s["slice_auto"] = bool(slice_auto)
+        changed = True
     if enabled is not None:
         s = dict(s)
         s["enabled"] = bool(enabled)

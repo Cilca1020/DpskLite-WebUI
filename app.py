@@ -16,6 +16,8 @@
   POST /api/sessions/<id>/cards-item  -> 人物卡条目操作（add/update/delete）
     POST /api/sessions/<id>/worlds-item -> 世界卡条目操作（add/update/delete）
     POST /api/sessions/<id>/summary-slice/<slice_id> -> 编辑单个剧情切片（名称/摘要）
+    POST /api/sessions/<id>/summary-slice/<slice_id>/rerun -> 手动重新总结单个切片
+    POST /api/sessions/<id>/summary-slices-run -> 锚点触发的切片自动总结（增量落袋）
   GET  /api/presets            -> 参数预设列表
   POST /api/presets            -> 保存预设
   DELETE /api/presets/<name>   -> 删除预设
@@ -425,11 +427,13 @@ def _run_memory_maintenance(api_key, sid, username):
         memory_engine.extract_facts_for_session(api_key, username, sid, stored_msgs)
     except Exception:  # noqa: BLE001
         app.logger.exception("动态关键事实抽取失败")
-    # ② 剧情摘要：文本线达到阈值自动总结（N 轮滚动合并）；切片线独立增量落袋（无新片零调用）
+    # ② 剧情摘要：文本线达到阈值自动总结（N 轮滚动合并）；
+    # 切片线自动总结独立受 slice_auto 开关控制（开启时落袋新闭合切片）
     try:
         if memory_engine.should_auto_summary(username, sid, stored_msgs):
             memory_engine.run_summary(api_key, username, sid, stored_msgs)
-        memory_engine.run_summary_slices(api_key, username, sid, stored_msgs)
+        if bool(((storage.get_session_memory(username, sid) or {}).get("summary") or {}).get("slice_auto")):
+            memory_engine.run_summary_slices(api_key, username, sid, stored_msgs)
     except Exception:  # noqa: BLE001
         app.logger.exception("剧情摘要自动总结失败")
 
@@ -710,8 +714,8 @@ def api_summary_config(sid):
     """读取 / 设置会话剧情摘要的触发参数。
 
     GET 返回当前配置；POST body 可选 {"slice_rounds": int, "enabled": bool,
-    "active": "text"|"slices"（注入模式，与前端摘要卡分页选择同步）}，
-    传哪个更新哪个。
+    "active": "text"|"slices"（注入模式，与前端摘要卡分页选择同步）,
+    "slice_auto": bool（切片自动总结开关）}，传哪个更新哪个。
     """
     username = session["username"]
     if request.method == "GET":
@@ -722,16 +726,18 @@ def api_summary_config(sid):
         return jsonify({
             "slice_rounds": s.get("slice_rounds"),
             "active": s.get("active", "text"),
+            "slice_auto": s.get("slice_auto", False),
             "enabled": s.get("enabled", True),
         })
     data = request.get_json(force=True, silent=True) or {}
     slice_rounds = data.get("slice_rounds")
     enabled = data.get("enabled")
     active = data.get("active")
-    if slice_rounds is None and enabled is None and active is None:
-        return jsonify({"error": "至少提供 slice_rounds / active / enabled 之一"}), 400
+    slice_auto = data.get("slice_auto")
+    if slice_rounds is None and enabled is None and active is None and slice_auto is None:
+        return jsonify({"error": "至少提供 slice_rounds / active / enabled / slice_auto 之一"}), 400
     mem = storage.set_session_summary_config(
-        username, sid, slice_rounds=slice_rounds, enabled=enabled, active=active
+        username, sid, slice_rounds=slice_rounds, enabled=enabled, active=active, slice_auto=slice_auto
     )
     if mem is None:
         return jsonify({"error": "会话不存在"}), 404
@@ -739,6 +745,7 @@ def api_summary_config(sid):
     return jsonify({
         "slice_rounds": s.get("slice_rounds"),
         "active": s.get("active", "text"),
+        "slice_auto": s.get("slice_auto", False),
         "enabled": s.get("enabled", True),
     })
 
@@ -793,9 +800,9 @@ def api_summary_text(sid):
 def api_summary_slice(sid, slice_id):
     """编辑单个剧情切片实体（切片管理面板入口）。
 
-    body 可选 {"name": str, "text": str}，传哪个更新哪个；更新后该片标记 edited，
-    整份摘要 text 重派生。改名时若该片起点轮次带场景锚点，同步更新锚点
-    scene_label（前端分割线显示名跟随）。返回 {"memory", "slice"}。
+    body 可选 {"name": str, "text": str}，传哪个更新哪个；更新后该片标记 edited。
+    改名时若该片起点轮次带场景锚点，同步更新锚点 scene_label（前端分割线显示名跟随）。
+    返回 {"memory", "slice"}。
     """
     username = session["username"]
     data = request.get_json(force=True, silent=True) or {}
@@ -810,6 +817,53 @@ def api_summary_slice(sid, slice_id):
     if name is not None:
         storage.rename_scene_anchor(username, sid, result["slice"]["start_round"], name)
     return jsonify({"memory": result["memory"], "slice": result["slice"]})
+
+
+@app.route("/api/sessions/<sid>/summary-slices-run", methods=["POST"])
+def api_summary_slices_run(sid):
+    """锚点触发的切片自动总结：增量落袋新闭合的切片（打锚点后前端调用）。
+
+    body: {"api_key": "..."}。仅当切片自动总结开关（summary.slice_auto）开启且
+    剧情摘要开关开启时执行；关闭时返回 400（前端 fire-and-forget 调用，静默忽略）。
+    返回 {"ok", "summary"} 或错误。
+    """
+    username = session["username"]
+    data = request.get_json(force=True, silent=True) or {}
+    api_key = str(data.get("api_key") or "").strip()
+    if not api_key:
+        return jsonify({"error": "缺少 api_key"}), 400
+    stored = storage.get_session(username, sid)
+    if not stored:
+        return jsonify({"error": "会话不存在"}), 404
+    s = (storage.get_session_memory(username, sid) or {}).get("summary") or {}
+    if not s.get("enabled", True):
+        return jsonify({"error": "剧情摘要已关闭"}), 400
+    if not s.get("slice_auto", False):
+        return jsonify({"error": "切片自动总结未开启"}), 400
+    result = memory_engine.run_summary_slices(api_key, username, sid, stored["messages"])
+    if not result.get("ok"):
+        return jsonify({"error": result.get("error", "切片总结失败")}), 502
+    return jsonify(result)
+
+
+@app.route("/api/sessions/<sid>/summary-slice/<slice_id>/rerun", methods=["POST"])
+def api_summary_slice_rerun(sid, slice_id):
+    """手动重新总结单个切片：无条件重总结该片范围的对话内容并替换旧摘要。
+
+    body: {"api_key": "..."}。不受自动总结开关影响（剧情摘要总开关关闭时拒绝）。
+    返回 {"slice": 更新后的切片实体}。
+    """
+    username = session["username"]
+    data = request.get_json(force=True, silent=True) or {}
+    api_key = str(data.get("api_key") or "").strip()
+    if not api_key:
+        return jsonify({"error": "缺少 api_key"}), 400
+    if not (storage.get_session_memory(username, sid) or {}).get("summary", {}).get("enabled", True):
+        return jsonify({"error": "剧情摘要已关闭，无法重新总结"}), 400
+    result = memory_engine.rerun_slice(api_key, username, sid, slice_id)
+    if not result.get("ok"):
+        return jsonify({"error": result.get("error", "重新总结失败")}), 502
+    return jsonify({"slice": result["slice"]})
 
 
 @app.route("/api/sessions/<sid>/memory-switches", methods=["POST"])
@@ -976,12 +1030,14 @@ def api_refresh_memory(sid):
     except Exception as e:  # noqa: BLE001
         app.logger.exception("手动刷新：剧情总结失败")
         errors.append(f"剧情总结失败: {e}")
-    # 切片线：增量落袋新切片（与文本摘要独立）
-    try:
-        memory_engine.run_summary_slices(api_key, username, sid, stored["messages"])
-    except Exception as e:  # noqa: BLE001
-        app.logger.exception("手动刷新：切片总结失败")
-        errors.append(f"切片总结失败: {e}")
+    # 切片线：增量落袋新切片（自动总结开关 slice_auto 开启时才随刷新自动跑；
+    # 关闭时仅支持锚点触发与手动单片重总结）
+    if bool(((storage.get_session_memory(username, sid) or {}).get("summary") or {}).get("slice_auto")):
+        try:
+            memory_engine.run_summary_slices(api_key, username, sid, stored["messages"])
+        except Exception as e:  # noqa: BLE001
+            app.logger.exception("手动刷新：切片总结失败")
+            errors.append(f"切片总结失败: {e}")
 
     return jsonify({
         "facts": facts_result,

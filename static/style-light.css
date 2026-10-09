@@ -1231,6 +1231,19 @@ body {
   white-space: pre-wrap;
   word-break: break-word;
 }
+/* 模态内「自动总结切片」开关行与提示的间距 */
+.modal-body .memory-sub-row {
+  margin-top: 12px;
+}
+.modal-body .memory-sub-hint {
+  display: block;
+  margin-top: 8px;
+  margin-bottom: 12px;
+}
+/* 切片展开体「重新总结」按钮：主题色右对齐（样式同卡片②的 mini-btn accent） */
+.memory-slice-rerun {
+  align-self: flex-end;
+}
 /* 切片空态：虚线框居中提示 */
 .memory-empty-box {
   margin: 0;

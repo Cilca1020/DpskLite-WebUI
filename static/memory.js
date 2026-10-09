@@ -106,6 +106,9 @@ function renderMemoryPanel() {
   }
   // 切片管理面板（持久化切片实体列表；无实体时隐藏）
   renderSummarySlices(summary);
+  // 管理面板「自动总结切片」开关状态跟随会话配置
+  const sliceAutoSwitch = memEl("memorySliceAutoSwitch");
+  if (sliceAutoSwitch) sliceAutoSwitch.checked = summary.slice_auto === true;
   // 摘要卡「切片摘要」分页：只读列表 + 按会话保存的注入模式恢复分页选择
   renderSliceMiniList(summary);
   setSummaryTab(summary.active === "slices" ? "slice" : "text");
@@ -278,6 +281,36 @@ function renderSummarySlices(summary) {
     textField.appendChild(textSpan);
     textField.appendChild(textArea);
 
+    // 「重新总结」按钮：无条件重总结该切片范围的对话内容并替换旧摘要
+    const rerunBtn = document.createElement("button");
+    rerunBtn.type = "button";
+    rerunBtn.className = "mini-btn accent memory-slice-rerun";
+    rerunBtn.textContent = "重新总结";
+    rerunBtn.addEventListener("click", async () => {
+      if (rerunBtn.disabled) return;
+      const apiKey = loadApiKey();
+      if (!apiKey) return showToast("请先在输入框上方填写 API Key");
+      rerunBtn.disabled = true;
+      rerunBtn.textContent = "总结中…";
+      try {
+        const r = await apiPost("/api/sessions/" + currentSessionId + "/summary-slice/" + sl.id + "/rerun", { api_key: apiKey });
+        if (r && r.error) { showToast(r.error || "重新总结失败"); }
+        else if (r && r.slice) {
+          // 就地更新：只刷新本片的摘要与折叠头标记，不重建列表（避免面板闪烁）
+          if (MEMORY_STATE && MEMORY_STATE.summary) {
+            MEMORY_STATE.summary.slices = (MEMORY_STATE.summary.slices || []).map((x) => (x.id === r.slice.id ? r.slice : x));
+          }
+          textArea.value = r.slice.text || "";
+          range.textContent = "第" + r.slice.start_round + "–" + r.slice.end_round + "轮" + (r.slice.edited ? " · 已编辑" : "");
+          showToast("已重新总结本切片");
+        }
+      } catch (_) {
+        showToast("重新总结失败");
+      }
+      rerunBtn.disabled = false;
+      rerunBtn.textContent = "重新总结";
+    });
+
     const msgsBox = document.createElement("div");
     msgsBox.className = "memory-slice-msgs";
     msgsBox.dataset.loaded = "0";
@@ -285,6 +318,7 @@ function renderSummarySlices(summary) {
 
     inner.appendChild(nameField);
     inner.appendChild(textField);
+    inner.appendChild(rerunBtn);
     inner.appendChild(msgsBox);
     item.appendChild(body);
     list.appendChild(item);
@@ -1471,6 +1505,24 @@ function bindSliceModal() {
   modal.addEventListener("click", (e) => {
     if (e.target === modal) modal.classList.add("hidden");
   });
+  // 「自动总结切片」开关：开启后每打一个锚点自动总结前一个切片（失焦即时保存）
+  const sliceAuto = memEl("memorySliceAutoSwitch");
+  if (sliceAuto) {
+    sliceAuto.addEventListener("change", async () => {
+      if (!currentSessionId) { refreshMemoryCardStates(); return showToast("请先选择对话"); }
+      const on = sliceAuto.checked;
+      MEMORY_STATE = MEMORY_STATE || {};
+      MEMORY_STATE.summary = Object.assign({}, MEMORY_STATE.summary || {}, { slice_auto: on });
+      try {
+        const r = await apiPost("/api/sessions/" + currentSessionId + "/summary-config", { slice_auto: on });
+        if (r && r.error) throw new Error(r.error);
+        showToast(on ? "已开启切片自动总结" : "已关闭切片自动总结");
+      } catch (e) {
+        sliceAuto.checked = !on; // 失败回滚
+        showToast(e && e.message ? e.message : "设置失败");
+      }
+    });
+  }
 }
 
 /* ---------------- 初始化 ---------------- */

@@ -261,6 +261,16 @@ async function addSceneBreak(row, msgIndex, existingLabel) {
     if (old) old.remove();
     row.parentNode.insertBefore(buildSceneDivider(label, msgIndex), row);
     showToast("已分场");
+    // 切片自动总结（管理面板开关开启时生效）：打锚点即自动总结前一个切片。
+    // fire-and-forget 静默执行：开关关闭后端返回 400，失败不打扰用户。
+    const ak = loadApiKey();
+    if (ak) {
+      fetch("/api/sessions/" + currentSessionId + "/summary-slices-run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ api_key: ak }),
+      }).catch(() => {});
+    }
   } catch (_) {
     showToast("分场失败");
   }

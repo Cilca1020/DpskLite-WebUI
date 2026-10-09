@@ -730,6 +730,47 @@ def run_summary_slices(api_key, username, sid, stored_msgs, slice_rounds=None, f
     return {"ok": True, "summary": storage._summary_slices_text(entities)}
 
 
+def rerun_slice(api_key, username, sid, slice_id, stored_msgs=None):
+    """手动重新总结单个切片：无条件重总结该切片范围的对话内容并替换旧摘要。
+
+    不受自动总结开关影响；切片范围（start_round–end_round）以实体为准，
+    即使消息增删导致范围偏移也按当前轮次重新对位。替换后 edited 重置为 False。
+
+    返回 {"ok": bool, "slice": dict, "error": str}（slice 为更新后的切片实体）。
+    """
+    if not (username and sid):
+        return {"ok": False, "error": "缺少会话信息"}
+    memory = _get_memory(username, sid)
+    if memory is None:
+        return {"ok": False, "error": "会话不存在"}
+    target = next((x for x in (memory.get("summary") or {}).get("slices") or [] if x.get("id") == str(slice_id)), None)
+    if target is None:
+        return {"ok": False, "error": "切片不存在"}
+    stored = stored_msgs if stored_msgs is not None else (
+        storage.get_session(username, sid).get("messages", []) if storage.get_session(username, sid) else []
+    )
+    # 消息列表与切片总结路径保持一致（过滤空消息；切片范围按当前轮次对位）
+    chat = [
+        {"role": m.get("role"), "content": (m.get("content") or "").strip()}
+        for m in stored
+        if m.get("role") in ("user", "assistant") and (m.get("content") or "").strip()
+    ]
+    total = _count_rounds(chat)
+    start, end = int(target.get("start_round") or 1), int(target.get("end_round") or 1)
+    start = max(1, min(start, total))
+    end = max(start, min(end, total))
+    msgs = chat[_index_of_round(chat, start - 1): _index_of_round(chat, end)]
+    if not msgs:
+        return {"ok": False, "error": "该切片范围内的对话已不存在（可能被删除）"}
+    text = summarize_slice(api_key, msgs)
+    if not text:
+        return {"ok": False, "error": "总结生成失败（LLM 不可用或返回空）"}
+    r = storage.rerun_summary_slice(username, sid, slice_id, text)
+    if r is None:
+        return {"ok": False, "error": "切片不存在"}
+    return {"ok": True, "slice": r["slice"]}
+
+
 def _index_of_round(chat, round_count):
     """返回「跳过前 round_count 轮（每轮 = 一条 user + 其后连续 assistant）」后的起点下标。
 

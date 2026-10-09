@@ -407,6 +407,14 @@
       </div>
       <div class="modal-body">
         <span class="param-hint">已总结落袋的剧情切片（按剧情顺序）。展开可查看本片对话内容、编辑场景名与本片摘要；改名与消息分割线双向同步。</span>
+        <div class="memory-sub-row">
+          <label class="memory-sub-switch" title="开启后每标记一个锚点，自动总结前一个切片的内容；关闭后仅支持手动重新总结与编辑">
+            <span class="memory-sub-label">自动总结切片</span>
+            <input id="memorySliceAutoSwitch" type="checkbox" />
+            <span class="switch-track"><span class="switch-thumb"></span></span>
+          </label>
+        </div>
+        <span class="param-hint memory-sub-hint">开启时每标记一个锚点即自动总结前一个切片；关闭时不自动总结，仅支持手动「重新总结」和编辑。</span>
         <div class="memory-slice-list" id="memorySliceList"></div>
       </div>
     </div>
