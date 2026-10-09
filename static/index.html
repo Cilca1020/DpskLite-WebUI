@@ -347,20 +347,31 @@
             </label>
           </div>
           <span class="param-hint memory-sub-hint">开启时每积累一个完整切片（切片轮数轮）自动总结剧情进展；关闭后仅支持「重新总结」和手动编辑。</span>
-          <textarea id="memorySummaryText" class="memory-summary-text" rows="5" placeholder="暂无摘要。可直接编辑（失焦自动保存），或点击「重新总结」从全部历史生成。"></textarea>
-          <div class="memory-summary-meta" id="memorySummaryMeta"></div>
-          <div class="memory-actions">
-            <label class="memory-num-field">
-              <span>切片轮数</span>
-              <input id="memorySummarySlice" type="number" min="1" max="200" step="1" />
-            </label>
-            <label class="memory-num-field">
-              <span>锚点段上限</span>
-              <input id="memorySummaryMaxSlice" type="number" min="1" max="200" step="1" />
-            </label>
-            <button id="memorySummaryRunBtn" class="mini-btn accent" type="button">重新总结</button>
+          <!-- 二选一分页：文本摘要（原功能）/ 切片摘要（只读） -->
+          <div class="summary-tabs" id="memorySummaryTabs" role="tablist">
+            <button id="summaryTabText" class="summary-tab active" type="button" role="tab">文本摘要</button>
+            <button id="summaryTabSlice" class="summary-tab" type="button" role="tab">切片摘要</button>
           </div>
-          <span class="param-hint">在这里存储对话内容梗概。<br>每积累一个完整切片（切片轮数轮）自动总结一次；关闭自动总结后仅手动。<br>在消息上点旗标可「分场」：锚点为硬边界，锚点段不超上限时整段总结，摘要行带【场景名】前缀。<br>总结落袋后，点顶部「切片管理」可查看每片对话内容、编辑场景名与本片摘要（与消息分割线双向同步）。</span>
+          <div id="summaryPageText">
+            <textarea id="memorySummaryText" class="memory-summary-text" rows="5" placeholder="暂无摘要。可直接编辑（失焦自动保存），或点击「重新总结」从全部历史生成。"></textarea>
+            <div class="memory-summary-meta" id="memorySummaryMeta"></div>
+            <div class="memory-actions">
+              <label class="memory-num-field">
+                <span>切片轮数</span>
+                <input id="memorySummarySlice" type="number" min="1" max="200" step="1" />
+              </label>
+              <label class="memory-num-field">
+                <span>锚点段上限</span>
+                <input id="memorySummaryMaxSlice" type="number" min="1" max="200" step="1" />
+              </label>
+              <button id="memorySummaryRunBtn" class="mini-btn accent" type="button">重新总结</button>
+            </div>
+            <span class="param-hint">在这里存储对话内容梗概。<br>每积累一个完整切片（切片轮数轮）自动总结一次；关闭自动总结后仅手动。<br>在消息上点旗标可「分场」：锚点为硬边界，锚点段不超上限时整段总结，摘要行带【场景名】前缀。</span>
+          </div>
+          <div id="summaryPageSlice" class="hidden">
+            <div class="slice-mini-list" id="memorySliceMiniList"></div>
+            <button id="memorySliceManageBtn" class="mini-btn" type="button" title="打开切片管理面板：查看每片对话内容、编辑场景名与本片摘要"><span class="btn-ic" id="memorySliceManageIc"></span>管理切片</button>
+          </div>
         </section>
 
         <!-- ④ 向量记忆 -->

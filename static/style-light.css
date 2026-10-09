@@ -1161,6 +1161,76 @@ body {
   gap: 10px;
   margin: 0 0 10px;
 }
+/* 摘要卡二选一分页：文本摘要 / 切片摘要（分段控件） */
+.summary-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 10px;
+  padding: 3px;
+  border: 1px solid var(--input-border);
+  border-radius: 8px;
+  background: var(--field-bg);
+}
+.summary-tab {
+  flex: 1;
+  padding: 7px 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-sidebar-dim);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+}
+.summary-tab:hover { color: var(--field-text); }
+.summary-tab.active {
+  background: var(--accent);
+  color: #fff;
+}
+/* 摘要卡「切片摘要」分页：只读切片条目 */
+.slice-mini-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 0 10px;
+}
+.slice-mini-item {
+  padding: 10px 12px;
+  border: 1px solid var(--input-border);
+  border-radius: 8px;
+  background: var(--field-bg);
+}
+.slice-mini-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.slice-mini-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--field-text);
+}
+.slice-mini-range {
+  flex-shrink: 0;
+  color: var(--text-sidebar-dim);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.slice-mini-text {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--field-text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+#memorySliceManageBtn { width: 100%; }
 .memory-slice-item {
   border: 1px solid var(--input-border);
   border-radius: 8px;

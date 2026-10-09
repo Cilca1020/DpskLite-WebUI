@@ -112,6 +112,9 @@ function renderMemoryPanel() {
   }
   // 切片管理面板（持久化切片实体列表；无实体时隐藏）
   renderSummarySlices(summary);
+  // 摘要卡「切片摘要」分页：只读列表 + 恢复当前分页选择
+  renderSliceMiniList(summary);
+  setSummaryTab(SUMMARY_TAB);
 
   // ④ 向量记忆：模型/开关/N 由 applyVmToUI 管理，这里同步 top_k 输入框
   const vec = mem.vector || {};
@@ -179,6 +182,22 @@ function refreshMemoryCardStates() {
 
 // 切片面板本地状态：当前展开的切片 id
 let MEMORY_SLICE_OPEN = null;
+
+// 摘要卡二选一分页：text = 文本摘要（原功能），slice = 切片摘要（只读）
+let SUMMARY_TAB = "text";
+
+// 切换摘要卡分页：按钮高亮 + 两个页面容器即时显隐（无动画）
+function setSummaryTab(tab) {
+  SUMMARY_TAB = tab === "slice" ? "slice" : "text";
+  const tabText = memEl("summaryTabText");
+  const tabSlice = memEl("summaryTabSlice");
+  const pageText = memEl("summaryPageText");
+  const pageSlice = memEl("summaryPageSlice");
+  if (tabText) tabText.classList.toggle("active", SUMMARY_TAB === "text");
+  if (tabSlice) tabSlice.classList.toggle("active", SUMMARY_TAB === "slice");
+  if (pageText) pageText.classList.toggle("hidden", SUMMARY_TAB !== "text");
+  if (pageSlice) pageSlice.classList.toggle("hidden", SUMMARY_TAB !== "slice");
+}
 
 // 渲染持久化切片列表（summary.slices）。每片：折叠头（名称 + 轮次范围）+
 // 展开体（场景名输入 / 本片摘要 textarea / 本片对话内容，均为失焦自动保存）。
@@ -261,6 +280,44 @@ function renderSummarySlices(summary) {
     item.appendChild(body);
     list.appendChild(item);
     if (isOpen) loadSliceMessages(sl.id, msgsBox);
+  });
+}
+
+// 摘要卡「切片摘要」分页：只读渲染切片名 + 本片摘要（编辑请点「管理切片」）
+function renderSliceMiniList(summary) {
+  const list = memEl("memorySliceMiniList");
+  if (!list) return;
+  const slices = Array.isArray(summary.slices) ? summary.slices : [];
+  list.innerHTML = "";
+  if (!slices.length) {
+    const empty = document.createElement("p");
+    empty.className = "memory-empty-text";
+    empty.textContent = "暂无切片：剧情总结落袋后这里会出现切片列表。打分场锚点并点「重新总结」可立即生成。";
+    list.appendChild(empty);
+    return;
+  }
+  slices.forEach((sl, i) => {
+    const item = document.createElement("div");
+    item.className = "slice-mini-item";
+
+    const head = document.createElement("div");
+    head.className = "slice-mini-head";
+    const name = document.createElement("span");
+    name.className = "slice-mini-name";
+    name.textContent = sl.name || ("第" + (i + 1) + "片");
+    const range = document.createElement("span");
+    range.className = "slice-mini-range";
+    range.textContent = "第" + sl.start_round + "–" + sl.end_round + "轮" + (sl.edited ? " · 已编辑" : "");
+    head.appendChild(name);
+    head.appendChild(range);
+
+    const text = document.createElement("div");
+    text.className = "slice-mini-text";
+    text.textContent = sl.text || "（本片暂无摘要）";
+
+    item.appendChild(head);
+    item.appendChild(text);
+    list.appendChild(item);
   });
 }
 
@@ -1194,6 +1251,12 @@ function bindMemorySummary() {
       }
     };
   }
+
+  // 摘要卡二选一分页：文本摘要 / 切片摘要
+  const tabText = memEl("summaryTabText");
+  const tabSlice = memEl("summaryTabSlice");
+  if (tabText) tabText.addEventListener("click", () => setSummaryTab("text"));
+  if (tabSlice) tabSlice.addEventListener("click", () => setSummaryTab("slice"));
 }
 
 // ④ 向量记忆：top_k 输入保存（模型/开关/N 的保存逻辑在 main.js / sessions.js）
@@ -1386,26 +1449,32 @@ function bindMemoryCardSwitches() {
 
 /* ---------------- ③ 切片管理模态面板 ---------------- */
 
-// 切片管理模态：入口按钮在记忆页顶部批量操作栏，面板居中显示 + 背景遮罩。
+// 切片管理模态：入口有两个——记忆页顶部批量操作栏「切片管理」按钮 +
+// 摘要卡切片分页里的「管理切片」按钮。面板居中显示 + 背景遮罩。
 // 按用户交互约定：显式点 ✕ 关闭（点遮罩不关闭），display 直接切换、无动画。
 function bindSliceModal() {
-  // 图标注入（按钮 + 模态标题）
+  // 图标注入（顶部按钮 + 模态标题 + 卡内管理按钮）
   const ic1 = memEl("memorySlicePanelIc");
   if (ic1) ic1.innerHTML = svgIcon("slice");
   const ic2 = memEl("memorySliceModalIc");
   if (ic2) ic2.innerHTML = svgIcon("slice");
+  const ic3 = memEl("memorySliceManageIc");
+  if (ic3) ic3.innerHTML = svgIcon("slice");
 
   const modal = memEl("memorySliceModal");
   const openBtn = memEl("memorySlicePanelBtn");
+  const openBtn2 = memEl("memorySliceManageBtn");
   const closeBtn = memEl("memorySliceModalClose");
-  if (!modal || !openBtn || !closeBtn) return;
+  if (!modal || !closeBtn) return;
 
-  openBtn.addEventListener("click", () => {
+  const openModal = () => {
     if (!currentSessionId) return showToast("请先选择对话");
     // 打开时重渲染一次，确保内容与会话数据同步
     renderSummarySlices(((MEMORY_STATE || {}).summary) || {});
     modal.classList.remove("hidden");
-  });
+  };
+  if (openBtn) openBtn.addEventListener("click", openModal);
+  if (openBtn2) openBtn2.addEventListener("click", openModal);
   closeBtn.addEventListener("click", () => modal.classList.add("hidden"));
 }
 
