@@ -678,14 +678,15 @@ class VectorMemory:
                 slice_pairs += self._slice_round_pairs(
                     base, sl.get("start_round"), sl.get("end_round"), recent_contents
                 )
-        # 合并去重（同一下标只保留一次），按会话时间顺序输出；来源分别标记便于日志区分
+        # 合并去重（同一下标只保留一次），按会话时间顺序输出；来源分别标记便于日志区分。
+        # 切片召回优先标记：整段摘要命中展开的轮次标为切片，散点单轮只标切片范围之外的部分。
         merged = {}
+        for i, m in slice_pairs:
+            if i not in merged:
+                merged[i] = (m, "vector_slice")
         for i, m in memory:
             if i not in merged:
                 merged[i] = (m, "vector")
-        for i, m in slice_pairs:
-            if i not in merged:
-                merged[i] = (m, "vector_slice")  # 切片召回优先级低于单轮（先到先得）
         vector_msgs = [
             dict(m, _src=src) for _, (m, src) in sorted(merged.items())
         ]
