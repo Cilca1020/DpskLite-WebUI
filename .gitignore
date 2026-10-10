@@ -12,6 +12,10 @@ data/
 models/*
 !models/.gitkeep
 
+# torch 大 wheel 预下载目录（服务器部署用），不入库
+_wheels/*
+!_wheels/.gitkeep
+
 .dockerignore
 Dockerfile
 
