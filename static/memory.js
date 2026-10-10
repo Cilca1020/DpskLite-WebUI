@@ -113,7 +113,7 @@ function renderMemoryPanel() {
   renderSliceMiniList(summary);
   setSummaryTab(summary.active === "slices" ? "slice" : "text");
 
-  // ④ 向量记忆：模型/开关/N 由 applyVmToUI 管理，这里同步 top_k 输入框
+  // ④ 向量记忆：模型/开关/N 由 applyVmToUI 管理，这里同步 top_k 输入框与切片召回开关
   const vec = mem.vector || {};
   const topK = memEl("vmTopK");
   if (topK) {
@@ -121,11 +121,16 @@ function renderMemoryPanel() {
     topK.value = (vec.top_k === null || vec.top_k === undefined) ? "" : vec.top_k;
     topK.disabled = !vec.enabled;
   }
+  const sliceRecall = memEl("vmSliceRecall");
+  if (sliceRecall) {
+    sliceRecall.checked = !!vec.slice_recall;
+    sliceRecall.disabled = !(vec.enabled && window.vmLoadModel && window.vmLoadModel());
+  }
   refreshMemoryCardStates();
 }
 
 // 向量记忆层：模型选择/开关/N 的可见性与禁用由 main.js（syncVmUi）管理，
-// 这里只保证 top_k 输入框跟随启用状态
+// 这里只保证 top_k 输入框与切片召回开关跟随启用状态
 function syncMemoryVectorField() {
   const en = memEl("vmEnabled");
   const topK = memEl("vmTopK");
@@ -133,6 +138,10 @@ function syncMemoryVectorField() {
   const hasModel = !!(window.vmLoadModel && window.vmLoadModel());
   if (topKField) topKField.classList.toggle("vm-hidden", !hasModel);
   if (topK) topK.disabled = !hasModel || !(en && en.checked);
+  const sliceField = memEl("vmSliceRecallField");
+  if (sliceField) sliceField.classList.toggle("vm-hidden", !hasModel);
+  const sliceRecall = memEl("vmSliceRecall");
+  if (sliceRecall) sliceRecall.disabled = !hasModel || !(en && en.checked);
 }
 
 // 同步卡片 2/3/4 的开关状态与置灰（内容保留但不可编辑）。
@@ -1327,6 +1336,27 @@ function bindMemoryVectorTopK() {
   });
 }
 
+// ④ 向量记忆：「召回剧情切片」开关（切片落袋/编辑时后端自动同步向量，这里只保存开关）
+function bindMemoryVectorSliceRecall() {
+  const sw = memEl("vmSliceRecall");
+  if (!sw) return;
+  sw.addEventListener("change", async () => {
+    if (!currentSessionId) { refreshMemoryCardStates(); return showToast("请先选择对话"); }
+    const on = sw.checked;
+    try {
+      const r = await apiPost("/api/sessions/" + currentSessionId + "/vector-config", { slice_recall: on });
+      if (r && r.error) throw new Error(r.error);
+      if (MEMORY_STATE) {
+        MEMORY_STATE.vector = Object.assign({}, MEMORY_STATE.vector || {}, { slice_recall: on });
+      }
+      showToast(on ? "已开启切片召回" : "已关闭切片召回");
+    } catch (e) {
+      sw.checked = !on; // 失败回滚
+      showToast(e && e.message ? e.message : "保存失败");
+    }
+  });
+}
+
 // 顶部批量操作：一键配置（打开 2/3/4 开关 + 恢复默认值）/ 关闭智能总结（关闭 2/3/4，0/1 继续生效）
 function bindMemoryMasterButtons() {
   const oneClick = memEl("memoryOneClickBtn");
@@ -1551,6 +1581,7 @@ function initMemoryPanel() {
   bindMemoryVectorTopK();
   bindMemoryMasterButtons();
   bindMemoryCardSwitches();
+  bindMemoryVectorSliceRecall();
   // 向量开关变化时同步 top_k 禁用态（main.js 的 syncVmUi 也会调用）
   const en = memEl("vmEnabled");
   if (en) en.addEventListener("change", syncMemoryVectorField);
@@ -1562,6 +1593,12 @@ window.loadMemoryPanel = loadMemoryPanel;
 window.resetMemoryPanel = resetMemoryPanel;
 window.syncMemoryVectorField = syncMemoryVectorField;
 window.refreshMemoryCardStates = refreshMemoryCardStates;
+// 切片召回开关当前值（sessions.js 保存 vm 配置时带上，防止全量替换时丢失）。
+// 读 DOM 实际状态而非 MEMORY_STATE 缓存——切会话瞬间缓存可能还停留在上一个会话。
+window.vmLoadSliceRecall = () => {
+  const el = document.getElementById("vmSliceRecall");
+  return !!(el && el.checked);
+};
 
 if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", initMemoryPanel);

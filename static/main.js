@@ -146,11 +146,15 @@ async function init() {
     const hasModel = !!vmLoadModel();
     const kf = $("#vmTopKField");
     if (kf) kf.classList.toggle("vm-hidden", !hasModel);
+    const sf = $("#vmSliceRecallField");
+    if (sf) sf.classList.toggle("vm-hidden", !hasModel);
     $("#vmEnabled").disabled = !hasModel;
-    // top_k 仅在「已选模型且启用向量记忆」时可编辑；N 独立于向量记忆，始终可用
+    // top_k / 切片召回仅在「已选模型且启用向量记忆」时可编辑；N 独立于向量记忆，始终可用
     const enabled = $("#vmEnabled").checked;
     const topK = $("#vmTopK");
     if (topK) topK.disabled = !hasModel || !enabled;
+    const sliceRecall = $("#vmSliceRecall");
+    if (sliceRecall) sliceRecall.disabled = !hasModel || !enabled;
     if (!hasModel) $("#vmEnabled").checked = false;
     // 开关/模型变化后同步记忆页的卡片置灰态
     if (window.refreshMemoryCardStates) window.refreshMemoryCardStates();

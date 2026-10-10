@@ -36,6 +36,7 @@ async function ensureSession() {
       model: vmLoadModel(),
       recent_n: vmLoadN(),
       top_k: vmLoadTopK(),
+      slice_recall: window.vmLoadSliceRecall ? window.vmLoadSliceRecall() : false,
     },
   });
   currentSessionId = s.id;
@@ -56,6 +57,8 @@ async function saveVmSettings() {
         model: vmLoadModel(),
         recent_n: vmLoadN(),
         top_k: vmLoadTopK(),
+        // 切片召回开关当前值（后端 vm 全量替换时若缺省会丢失，务必带上）
+        slice_recall: window.vmLoadSliceRecall ? window.vmLoadSliceRecall() : false,
       },
     });
   } catch (_) {
@@ -77,6 +80,8 @@ async function saveSessionConfig() {
       model: vmLoadModel(),
       recent_n: vmLoadN(),
       top_k: vmLoadTopK(),
+      // vm 全量替换时若缺省会丢失切片召回开关，务必带上
+      slice_recall: window.vmLoadSliceRecall ? window.vmLoadSliceRecall() : false,
     },
   };
   try {

@@ -391,6 +391,14 @@
             <input id="vmTopK" type="number" min="0" max="500" step="1" />
             <span class="param-hint">0 = 自动召回（按相似度阈值，不限数量）；&gt;0 = 固定返回前 N 条相似记忆（上限 500）。</span>
           </div>
+          <div class="param-field vm-collapsible" id="vmSliceRecallField">
+            <label for="vmSliceRecall">召回剧情切片</label>
+            <label class="memory-card-switch vm-slice-switch" title="开启后按切片摘要相似度召回整段切片对话">
+              <input id="vmSliceRecall" type="checkbox" />
+              <span class="switch-track"><span class="switch-thumb"></span></span>
+            </label>
+            <span class="param-hint">开启后，单轮召回之外还会比对剧情切片摘要，命中时召回该切片覆盖的完整对话（剧情大纲式回忆）。切片落袋 / 编辑后自动入库。</span>
+          </div>
         </section>
       </div>
     </div><!-- /settingsPageMemory -->

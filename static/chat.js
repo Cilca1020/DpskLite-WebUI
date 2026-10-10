@@ -78,6 +78,9 @@ function applyVmToUI(vm) {
     topK.value = (vmTopK === null) ? "" : vmTopK;
     topK.disabled = !vmEnabled;
   }
+  // 切片召回开关随会话恢复（切换会话时立即同步 DOM，避免保存读到上一会话的状态）
+  const sr = $("#vmSliceRecall");
+  if (sr) sr.checked = !!(vm && vm.slice_recall);
   // 通知记忆页同步 top_k 的可见/禁用态
   if (window.syncMemoryVectorField) window.syncMemoryVectorField();
 }

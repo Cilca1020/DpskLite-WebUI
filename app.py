@@ -28,6 +28,7 @@ import io
 import json
 import hmac
 import os
+import threading
 import random
 import re
 import secrets
@@ -487,6 +488,8 @@ def _log_context(sid, messages):
         # 根据 _src 或内容判断当前区块
         if src == "vector":
             cur = "vector"
+        elif src == "vector_slice":
+            cur = "vector_slice"
         elif src == "recent":
             cur = "recent"
         elif content.startswith("【世界设定"):
@@ -510,7 +513,8 @@ def _log_context(sid, messages):
                 "card":   "▼ ① 核心设定·人物卡（无条件常驻）",
                 "facts":  "▼ ② 动态关键事实（无条件常驻）",
                 "summary":"▼ ③ 剧情摘要（无条件常驻）",
-                "vector": "▼ ④ 向量记忆检索片段（按需召回）",
+                "vector": "▼ ④ 向量记忆·单轮召回（按需召回）",
+                "vector_slice": "▼ ④ 向量记忆·切片召回（按需召回）",
                 "recent": "▼ 最近对话窗口",
                 "plain":  "▼ 对话内容",
             }
@@ -520,7 +524,9 @@ def _log_context(sid, messages):
         # 给向量检索片段加行内标记，进一步划清范围
         tag = ""
         if cur == "vector":
-            tag = " [向量检索]"
+            tag = " [单轮召回]"
+        elif cur == "vector_slice":
+            tag = " [切片召回]"
         elif cur == "recent":
             tag = " [最近对话]"
 
@@ -816,6 +822,8 @@ def api_summary_slice(sid, slice_id):
     # 改名同步：该片起点轮次上的锚点 scene_label 跟随更新（无锚点则跳过）
     if name is not None:
         storage.rename_scene_anchor(username, sid, result["slice"]["start_round"], name)
+    # 切片向量同步：改名/改摘要影响切片召回的相似度（开关关闭时内部静默跳过）
+    memory_engine.sync_slice_vectors(username, sid)
     return jsonify({"memory": result["memory"], "slice": result["slice"]})
 
 
@@ -863,6 +871,8 @@ def api_summary_slice_rerun(sid, slice_id):
     result = memory_engine.rerun_slice(api_key, username, sid, slice_id)
     if not result.get("ok"):
         return jsonify({"error": result.get("error", "重新总结失败")}), 502
+    # 切片摘要已替换，同步切片向量（开关关闭时内部静默跳过）
+    memory_engine.sync_slice_vectors(username, sid)
     return jsonify({"slice": result["slice"]})
 
 
@@ -921,6 +931,7 @@ def api_vector_config(sid):
             "recent_n": mem.get("recent_n", v.get("recent_n")),
             "top_k": v.get("top_k"),
             "auto": v.get("top_k") == 0,  # 是否为自动召回
+            "slice_recall": bool(v.get("slice_recall")),
         })
     data = request.get_json(force=True, silent=True) or {}
     # 支持 "auto": true 快捷方式 -> top_k=0
@@ -929,15 +940,23 @@ def api_vector_config(sid):
         top_k = 0
     elif "top_k" not in data:
         top_k = storage._UNSET  # 未传 top_k：不更新该字段
+    # slice_recall：未传不更新；传了按 bool 保存
+    slice_recall = data.get("slice_recall") if "slice_recall" in data else storage._UNSET
     mem = storage.set_session_vector_config(
         username, sid,
         top_k=top_k,
         recent_n=data.get("recent_n"),
         enabled=data.get("enabled"),
         model=data.get("model"),
+        slice_recall=slice_recall,
     )
     if mem is None:
         return jsonify({"error": "会话不存在"}), 404
+    # 开启切片召回时，后台回填该会话已有切片的向量（先落袋后开开关的场景）
+    if slice_recall is True:
+        threading.Thread(
+            target=memory_engine.sync_slice_vectors, args=(username, sid), daemon=True
+        ).start()
     v = mem.get("vector") or {}
     return jsonify({
         "enabled": bool(v.get("enabled")),
@@ -945,6 +964,7 @@ def api_vector_config(sid):
         "recent_n": mem.get("recent_n", v.get("recent_n")),
         "top_k": v.get("top_k"),
         "auto": v.get("top_k") == 0,
+        "slice_recall": bool(v.get("slice_recall")),
     })
 
 

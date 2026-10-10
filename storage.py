@@ -374,6 +374,7 @@ def _parse_vm(raw):
         "model": None,
         "recent_n": config.VECTOR_MEMORY_RECENT_N,
         "top_k": None,
+        "slice_recall": False,  # 切片召回：按切片摘要相似度召回整段切片对话
     }
     if isinstance(raw, str):
         try:
@@ -401,6 +402,7 @@ def _parse_vm(raw):
         "model": raw.get("model") or None,
         "recent_n": recent_n,
         "top_k": top_k,
+        "slice_recall": bool(raw.get("slice_recall", False)),
     }
 
 
@@ -879,11 +881,12 @@ def set_session_memory_switches(username, sid, facts_enabled=None, summary_enabl
 _UNSET = object()
 
 
-def set_session_vector_config(username, sid, top_k=_UNSET, recent_n=None, enabled=None, model=None):
+def set_session_vector_config(username, sid, top_k=_UNSET, recent_n=None, enabled=None, model=None, slice_recall=_UNSET):
     """设置会话的向量记忆配置。
 
     只更新传入的参数，其余保留。返回新 memory 或 None（会话不存在）。
     top_k 语义：_UNSET=不更新；None=清除（恢复默认，存储为 null）；0=不限制（自动召回）；>0=固定 N 条。
+    slice_recall 语义：_UNSET=不更新；其余按 bool 保存（切片召回开关）。
     """
     memory = get_session_memory(username, sid)
     if memory is None:
@@ -910,6 +913,9 @@ def set_session_vector_config(username, sid, top_k=_UNSET, recent_n=None, enable
         changed = True
     if model is not None:
         vec["model"] = str(model).strip() or None
+        changed = True
+    if slice_recall is not _UNSET:
+        vec["slice_recall"] = bool(slice_recall)
         changed = True
     if changed:
         memory["vector"] = _parse_vm(vec)

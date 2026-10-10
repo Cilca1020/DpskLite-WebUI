@@ -45,6 +45,7 @@ DEFAULT_RECENT_N = 10      # 最近 n 条完整消息（user/assistant）
 DEFAULT_TOP_K = 5          # 向量检索返回条数
 DEFAULT_MIN_SCORE = 0.3    # 低于该相似度的检索结果直接丢弃
 DEFAULT_MAX_SEQ_LEN = 8192  # 编码最大序列长度（模型原生支持 32k，取 8k 平衡内存/速度）
+SLICE_TOP_K = 2            # 切片召回：最多召回的切片数（每片含多轮完整对话，2 个足够）
 
 
 class VectorMemoryError(RuntimeError):
@@ -100,6 +101,13 @@ def list_available_models(models_dir="models"):
 def _chunk_hash(session_id, role, content):
     """消息内容指纹：用于增量同步时判断某条消息是否已入库（幂等）。"""
     return hashlib.sha256(f"{session_id}\n{role}\n{content}".encode("utf-8")).hexdigest()
+
+
+def _slice_summary_hash(session_id, slice_id, name, summary):
+    """切片内容指纹：场景名或摘要变化时重新编码入库。"""
+    return hashlib.sha256(
+        f"{session_id}\n{slice_id}\n{name}\n{summary}".encode("utf-8")
+    ).hexdigest()
 
 
 def _pick_device(device="auto"):
@@ -205,6 +213,21 @@ class VectorMemory:
                     hash TEXT NOT NULL DEFAULT ''
                 );
                 CREATE INDEX IF NOT EXISTS idx_memory_session ON memory_chunks(session_id);
+                -- 剧情切片向量：摘要向量化，检索命中后展开整段切片对话
+                CREATE TABLE IF NOT EXISTS slice_chunks (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    slice_id TEXT NOT NULL,
+                    name TEXT NOT NULL DEFAULT '',
+                    summary TEXT NOT NULL DEFAULT '',
+                    summary_hash TEXT NOT NULL DEFAULT '',
+                    embedding BLOB NOT NULL,
+                    dim INTEGER NOT NULL,
+                    ts REAL NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_slice_session ON slice_chunks(session_id);
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_slice_session_slice
+                    ON slice_chunks(session_id, slice_id);
                 """
             )
             # 旧库迁移：补充 hash 列；旧数据无 hash 无法去重，清空重建
@@ -391,9 +414,10 @@ class VectorMemory:
         return self.sync_session(session_id, messages)
 
     def clear_session(self, session_id):
-        """清空某个会话的向量记忆。"""
+        """清空某个会话的向量记忆（含切片向量）。"""
         with self._connect() as conn:
             conn.execute("DELETE FROM memory_chunks WHERE session_id = ?", (session_id,))
+            conn.execute("DELETE FROM slice_chunks WHERE session_id = ?", (session_id,))
 
     def count(self, session_id=None):
         """向量库条数统计。"""
@@ -405,6 +429,74 @@ class VectorMemory:
                     "SELECT COUNT(*) AS n FROM memory_chunks WHERE session_id = ?", (session_id,)
                 ).fetchone()
         return int(row["n"])
+
+    # ------------------------- 切片向量 -------------------------
+
+    def sync_slices(self, session_id, slices):
+        """把剧情切片（summary.slices 实体）的摘要同步进切片向量库，幂等。
+
+        slices 为 [{id, name, text, ...}]。与库内现有切片按 slice_id 对齐：
+        - 已消失的切片（重建/合并）删除向量；
+        - name 或摘要变化的切片重新编码入库；
+        - 其余不动（零编码开销）。
+        返回 {added, updated, removed}。
+        """
+        items = []
+        for sl in slices or []:
+            text = (sl.get("text") or "").strip()
+            if not text:
+                continue
+            items.append({
+                "slice_id": str(sl.get("id") or ""),
+                "name": str(sl.get("name") or ""),
+                "summary": text,
+            })
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT slice_id, summary_hash FROM slice_chunks WHERE session_id = ?",
+                (session_id,),
+            ).fetchall()
+        by_id = {r["slice_id"]: r["summary_hash"] for r in rows}
+        stats = {"added": 0, "updated": 0, "removed": 0}
+        keep_ids = {it["slice_id"] for it in items if it["slice_id"]}
+        # 删除已消失的切片向量
+        stale = [sid_ for sid_ in by_id if sid_ not in keep_ids]
+        if stale:
+            with self._connect() as conn:
+                conn.executemany(
+                    "DELETE FROM slice_chunks WHERE session_id = ? AND slice_id = ?",
+                    [(session_id, sid_) for sid_ in stale],
+                )
+            stats["removed"] = len(stale)
+        # 找出新增 / 内容变化的切片，批量编码
+        pending = []
+        for it in items:
+            if not it["slice_id"]:
+                continue
+            h = _slice_summary_hash(session_id, it["slice_id"], it["name"], it["summary"])
+            if by_id.get(it["slice_id"]) == h:
+                continue
+            it["summary_hash"] = h
+            pending.append(it)
+        if pending:
+            vecs = self.encode([it["summary"] for it in pending], query=False)
+            now = time.time()
+            with self._connect() as conn:
+                for it, vec in zip(pending, vecs):
+                    conn.execute(
+                        "INSERT INTO slice_chunks(id, session_id, slice_id, name, summary, "
+                        "summary_hash, embedding, dim, ts) VALUES (?,?,?,?,?,?,?,?,?) "
+                        "ON CONFLICT(session_id, slice_id) DO UPDATE SET "
+                        "name=excluded.name, summary=excluded.summary, "
+                        "summary_hash=excluded.summary_hash, embedding=excluded.embedding, "
+                        "dim=excluded.dim, ts=excluded.ts",
+                        (uuid.uuid4().hex, session_id, it["slice_id"], it["name"], it["summary"],
+                         it["summary_hash"], np.asarray(vec, dtype=np.float32).tobytes(),
+                         int(vec.size), now),
+                    )
+            for it in pending:
+                stats["updated" if it["slice_id"] in by_id else "added"] += 1
+        return stats
 
     # ------------------------- 检索 -------------------------
 
@@ -464,6 +556,36 @@ class VectorMemory:
         # top_k=0 表示不限制数量（自动召回）；>0 时返回前 N 条
         return dedup if top_k == 0 else dedup[:top_k]
 
+    def search_slices(self, query_text, session_id=None, top_k=SLICE_TOP_K, min_score=None):
+        """切片摘要向量检索：返回相似度最高的切片 [{slice_id, name, summary, score}]。"""
+        if not (query_text or "").strip():
+            return []
+        qvec = self.encode([query_text], query=True)[0]
+        sql = (
+            "SELECT slice_id, name, summary, embedding FROM slice_chunks"
+            + (" WHERE session_id = ?" if session_id else "")
+        )
+        with self._connect() as conn:
+            rows = conn.execute(sql, (session_id,) if session_id else ()).fetchall()
+        qnorm = np.linalg.norm(qvec)
+        results = []
+        for row in rows:
+            vec = np.frombuffer(row["embedding"], dtype=np.float32)
+            if vec.size == 0:
+                continue
+            denom = qnorm * np.linalg.norm(vec) + 1e-12
+            score = float(np.dot(qvec, vec) / denom)
+            results.append({
+                "slice_id": row["slice_id"],
+                "name": row["name"],
+                "summary": row["summary"],
+                "score": score,
+            })
+        results.sort(key=lambda r: r["score"], reverse=True)
+        min_score = self.min_score if min_score is None else min_score
+        results = [r for r in results if r["score"] >= min_score]
+        return results[:top_k] if top_k else results
+
     # ------------------------- 历史拼接 -------------------------
 
     def build_history(
@@ -477,6 +599,8 @@ class VectorMemory:
         recent_rounds=None,
         full_messages=None,
         max_chars=None,
+        slice_recall=False,
+        slices=None,
     ):
         """按“最近 N 轮对话 + 更早的向量检索结果（按轮次）”拼接对话历史。
 
@@ -539,8 +663,32 @@ class VectorMemory:
         else:
             base = chat
         memory = self._expand_rounds(base, hits, recent_contents)
-        # 给两部分打上来源标记（仅用于日志/调试，_src 是额外字段，不影响发给 LLM）
-        vector_msgs = [{**m, "_src": "vector"} for m in memory]
+        # 切片召回：摘要向量命中 -> 展开该切片覆盖的完整轮次对话，与单轮召回合并
+        slice_pairs = []
+        if slice_recall and slices:
+            try:
+                slice_hits = self.search_slices(qtext, session_id=session_id)
+            except Exception:  # noqa: BLE001
+                slice_hits = []
+            s_by_id = {str(s.get("id") or ""): s for s in slices}
+            for sh in slice_hits:
+                sl = s_by_id.get(str(sh["slice_id"]))
+                if not sl:
+                    continue
+                slice_pairs += self._slice_round_pairs(
+                    base, sl.get("start_round"), sl.get("end_round"), recent_contents
+                )
+        # 合并去重（同一下标只保留一次），按会话时间顺序输出；来源分别标记便于日志区分
+        merged = {}
+        for i, m in memory:
+            if i not in merged:
+                merged[i] = (m, "vector")
+        for i, m in slice_pairs:
+            if i not in merged:
+                merged[i] = (m, "vector_slice")  # 切片召回优先级低于单轮（先到先得）
+        vector_msgs = [
+            dict(m, _src=src) for _, (m, src) in sorted(merged.items())
+        ]
         recent_msgs = [{**m, "_src": "recent"} for m in recent]
         result = vector_msgs + recent_msgs
         # token 过多时砍掉最早的部分（至少保留最后一条，即当前提问）
@@ -550,8 +698,10 @@ class VectorMemory:
         return result
 
     def _expand_rounds(self, chat, hits, recent_contents):
-        """把命中的单条消息展开为完整轮次（一轮 = 一条提问 + 紧随其后的回答），
-        按时间升序返回，且去掉已在最近窗口内出现的消息，避免碎片化/重复。"""
+        """把命中的单条消息展开为完整轮次（一轮 = 一条提问 + 紧随其后的回答）。
+
+        返回 [(base下标, 消息)]，按时间升序；已在最近窗口内的消息被剔除。
+        """
         if not hits:
             return []
         # 命中内容 -> 在 chat 中的下标（同内容取首个）
@@ -578,7 +728,35 @@ class VectorMemory:
                 round_idxs.add(j)
                 j += 1
         return [
-            {"role": chat[i]["role"], "content": chat[i]["content"]}
+            (i, {"role": chat[i]["role"], "content": chat[i]["content"]})
             for i in sorted(round_idxs)
             if chat[i]["content"] not in recent_contents
+        ]
+
+    def _slice_round_pairs(self, base, start_round, end_round, recent_contents):
+        """按切片的轮次范围 [start_round, end_round] 展开完整对话（含范围外紧邻回答）。
+
+        轮次编号与非 system 消息中第 N 条 user 对齐（与切片实体一致）。
+        返回 [(base下标, 消息)]；已在最近窗口内的消息被剔除。
+        """
+        try:
+            lo_r = max(1, int(start_round or 0))
+            hi_r = max(1, int(end_round or 0))
+        except (TypeError, ValueError):
+            return []
+        if hi_r < lo_r:
+            return []
+        user_idx = [i for i, m in enumerate(base) if m["role"] == "user"]
+        if not user_idx:
+            return []
+        total = len(user_idx)
+        if lo_r > total:
+            return []
+        hi_r = min(hi_r, total)
+        lo = user_idx[lo_r - 1]                                  # 首轮 user 消息下标
+        hi_end = user_idx[hi_r] if hi_r < total else len(base)   # 末轮的下一个 user 前
+        return [
+            (i, {"role": base[i]["role"], "content": base[i]["content"]})
+            for i in range(lo, hi_end)
+            if base[i]["content"] not in recent_contents
         ]

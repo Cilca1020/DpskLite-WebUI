@@ -256,6 +256,9 @@ def _build_history(chat, sid, data, params, stored_msgs, memory):
             top_k = int(session_top_k)
         except (TypeError, ValueError):
             top_k = None
+    # 切片召回：开关开启且会话有已落袋切片时，额外按切片摘要相似度召回整段切片对话
+    slice_recall = bool(vec_cfg.get("slice_recall"))
+    session_slices = ((memory or {}).get("summary") or {}).get("slices") or []
     if n_rounds == 0:
         # N=0：最近窗口尽量塞满（窗口预算估算），build_history 内部按预算砍掉最早部分；
         # 向量检索照常按用户参数召回（full_messages 展开的早期片段保留在结果前面）。
@@ -272,6 +275,8 @@ def _build_history(chat, sid, data, params, stored_msgs, memory):
         top_k=top_k,
         full_messages=full,
         max_chars=max_chars,
+        slice_recall=slice_recall,
+        slices=session_slices,
     )
 
 
@@ -684,6 +689,7 @@ def run_summary_slices(api_key, username, sid, stored_msgs, slice_rounds=None, f
     if not pending:
         if name_dirty:
             storage.set_session_summary_slices(username, sid, keep)
+            sync_slice_vectors(username, sid)  # 场景名变化同步切片向量
             return {"ok": True, "summary": ""}
         return {"ok": True, "summary": ""}
     # 重建继承池：划分变化后被取代的旧片（edited 者的文本按范围重叠继承）
@@ -727,7 +733,33 @@ def run_summary_slices(api_key, username, sid, stored_msgs, slice_rounds=None, f
                 "edited": False, "ts": time.time(),
             }]
     storage.set_session_summary_slices(username, sid, entities)
+    sync_slice_vectors(username, sid)
     return {"ok": True, "summary": storage._summary_slices_text(entities)}
+
+
+def sync_slice_vectors(username, sid):
+    """把会话已落袋切片的摘要同步进切片向量库（向量记忆切片召回的数据源）。
+
+    仅当会话开启「召回剧情切片」时执行（关闭时不占用编码资源）。
+    向量不可用 / 无切片 / 无变化时静默跳过，绝不影响切片总结与对话主流程。
+    """
+    try:
+        memory = storage.get_session_memory(username, sid) or {}
+        vec_cfg = memory.get("vector") or {}
+        if not vec_cfg.get("slice_recall"):
+            return
+        slices = ((memory.get("summary") or {}).get("slices") or [])
+        if not slices:
+            return
+        vm = vector_memory.get_instance(
+            db_path=config.VECTOR_MEMORY_DB,
+            # 与检索侧一致：优先使用会话配置的向量化模型，避免维度不匹配
+            model_dir=os_join_models(vec_cfg["model"]) if vec_cfg.get("model") else vector_memory.MODEL_DIR,
+            device=config.VECTOR_MEMORY_DEVICE,
+        )
+        vm.sync_slices(sid, slices)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def rerun_slice(api_key, username, sid, slice_id, stored_msgs=None):

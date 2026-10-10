@@ -426,6 +426,12 @@ body {
   background: var(--btn-bg);
   color: var(--field-text);
 }
+/* 「召回剧情切片」开关：label 下方另起一行、靠左
+   （.param-field > label 的 display:block 会覆盖 inline-flex，需更高优先级还原开关布局） */
+.param-field > label.vm-slice-switch {
+  display: inline-flex;
+  margin-bottom: 6px;
+}
 
 /* 向量记忆设置：开关与 N 两项随是否选择模型平滑展开/收起 */
 .vm-collapsible {
