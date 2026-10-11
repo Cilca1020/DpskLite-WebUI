@@ -1,11 +1,13 @@
 """SQLite 数据存储：账号、会话与参数预设。"""
 
+import functools
 import hashlib
 import hmac
 import json
 import os
 import secrets
 import sqlite3
+import threading
 import time
 import uuid
 
@@ -15,6 +17,25 @@ DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 SESSIONS_DIR = os.path.join(DATA_DIR, "sessions")
 PRESETS_FILE = os.path.join(DATA_DIR, "presets.json")
 DB_FILE = os.path.join(DATA_DIR, "app.db")
+
+
+# 进程级可重入锁：保护会话的「读取整行 → 修改 → 整行写回」序列。
+# 每次改会话都是 get_session（读整列 messages JSON）→ 改内存 → _save_session（整列写回），
+# 中间没有任何并发保护；waitress 单进程多线程下，前端落库与后台记忆维护线程会互相用
+# 过期快照覆盖整行，导致刚写入的消息丢失。此锁把整段读改写串行化，消除丢失更新。
+# 用可重入锁以支持 save_session_memory 等嵌套调用（外层已持锁时内层直接进入）。
+_SESSION_LOCK = threading.RLock()
+
+
+def _locked(fn):
+    """装饰器：在该函数的会话整行读改写期间持有 _SESSION_LOCK。"""
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with _SESSION_LOCK:
+            return fn(*args, **kwargs)
+
+    return wrapper
 
 
 def _ensure_dirs():
@@ -519,6 +540,7 @@ def auto_title_status(username, sid):
     return {"title": row["title"], "generated": bool(row["auto_title_generated"])}
 
 
+@_locked
 def update_session_config(username, sid, model=None, params=None, vm=None, memory=None):
     session = get_session(username, sid)
     if session is None:
@@ -543,6 +565,7 @@ def get_session_memory(username, sid):
     return session["memory"] if session else None
 
 
+@_locked
 def save_session_memory(username, sid, memory):
     """整体覆盖会话的四层记忆（规范化后落库），返回新会话或 None。"""
     session = get_session(username, sid)
@@ -553,6 +576,7 @@ def save_session_memory(username, sid, memory):
     return session
 
 
+@_locked
 def set_session_cards_item(username, sid, op, card_id=None, name=None, content=None):
     """人物卡列表条目操作（多角色，一角色一卡）。
 
@@ -613,6 +637,7 @@ def set_session_cards_item(username, sid, op, card_id=None, name=None, content=N
     return memory
 
 
+@_locked
 def set_session_worlds_item(username, sid, op, world_id=None, name=None, content=None):
     """世界卡列表条目操作（多张，一卡一世界观设定）。
 
@@ -654,6 +679,7 @@ def set_session_worlds_item(username, sid, op, world_id=None, name=None, content
     return memory
 
 
+@_locked
 def set_session_facts_config(username, sid, slice_rounds=None, max_per_slice=None):
     """设置动态关键事实的抽取配置。
 
@@ -682,6 +708,7 @@ def set_session_facts_config(username, sid, slice_rounds=None, max_per_slice=Non
     return memory
 
 
+@_locked
 def set_session_facts(username, sid, facts, last_round=None):
     """整体覆盖动态关键事实列表。facts 为 [{"text", ...}]，规范化后落库。
 
@@ -701,6 +728,7 @@ def set_session_facts(username, sid, facts, last_round=None):
     return memory
 
 
+@_locked
 def set_session_summary(username, sid, text, last_round=None):
     """写入剧情摘要整份文本。text 为空则清除（含切片实体）。last_round 为已总结到的轮次。
 
@@ -724,6 +752,7 @@ def set_session_summary(username, sid, text, last_round=None):
     return memory
 
 
+@_locked
 def set_session_summary_slices(username, sid, slices, last_round=None):
     """全量覆盖持久化切片实体列表（切片线专用，不改动整份 text）。
 
@@ -745,6 +774,7 @@ def set_session_summary_slices(username, sid, slices, last_round=None):
     return memory
 
 
+@_locked
 def update_summary_slice(username, sid, slice_id, name=None, text=None):
     """更新单个切片实体的名称或摘要（面板编辑入口）。
 
@@ -770,6 +800,7 @@ def update_summary_slice(username, sid, slice_id, name=None, text=None):
     return {"memory": memory, "slice": target}
 
 
+@_locked
 def rerun_summary_slice(username, sid, slice_id, text):
     """用新总结替换指定切片的摘要（手动「重新总结」入口）。
 
@@ -792,6 +823,7 @@ def rerun_summary_slice(username, sid, slice_id, text):
     return {"memory": memory, "slice": target}
 
 
+@_locked
 def set_session_summary_config(username, sid, slice_rounds=None, enabled=None, active=None, slice_auto=None):
     """设置会话剧情摘要的触发参数（slice_rounds 切片宽度 / enabled 开关 /
     active 注入模式 / slice_auto 切片自动总结开关）。
@@ -831,6 +863,7 @@ def set_session_summary_config(username, sid, slice_rounds=None, enabled=None, a
     return memory
 
 
+@_locked
 def set_session_memory_switches(username, sid, facts_enabled=None, summary_enabled=None,
                                 vector_enabled=None, reset_values=False, facts_auto=None,
                                 summary_auto=None):
@@ -881,6 +914,7 @@ def set_session_memory_switches(username, sid, facts_enabled=None, summary_enabl
 _UNSET = object()
 
 
+@_locked
 def set_session_vector_config(username, sid, top_k=_UNSET, recent_n=None, enabled=None, model=None, slice_recall=_UNSET):
     """设置会话的向量记忆配置。
 
@@ -924,6 +958,7 @@ def set_session_vector_config(username, sid, top_k=_UNSET, recent_n=None, enable
     return memory
 
 
+@_locked
 def set_session_recent_n(username, sid, recent_n):
     """设置独立的最近 N 轮上下文策略（0=全量模式，保留全部上下文）。"""
     memory = get_session_memory(username, sid)
@@ -940,6 +975,7 @@ def set_session_recent_n(username, sid, recent_n):
     return memory
 
 
+@_locked
 def clear_session_memory_layer(username, sid, layer):
     """清空某一层记忆（cards / facts / summary），vector 为配置不清。返回新 memory 或 None。"""
     memory = get_session_memory(username, sid)
@@ -1011,6 +1047,7 @@ def delete_session(username, sid):
         conn.execute("DELETE FROM sessions WHERE id = ? AND username = ?", (sid, username))
 
 
+@_locked
 def rename_session(username, sid, title):
     session = get_session(username, sid)
     if session is None:
@@ -1039,6 +1076,7 @@ def cleanup_empty_sessions(username, exclude_id=None):
     return removed
 
 
+@_locked
 def delete_message(username, sid, index):
     session = get_session(username, sid)
     if session is None:
@@ -1052,6 +1090,7 @@ def delete_message(username, sid, index):
     return session
 
 
+@_locked
 def set_message_scene_break(username, sid, index, scene_break, scene_label=None):
     """设置 / 清除指定 user 消息上的场景锚点（手动分场标记）。
 
@@ -1084,6 +1123,7 @@ def set_message_scene_break(username, sid, index, scene_break, scene_label=None)
     return message
 
 
+@_locked
 def ensure_first_anchor(username, sid):
     """确保会话存在「开场锚点」：首个锚点打在中间时，自动给首条 user 消息补一个
     场景锚点，使「首轮 → 第一个用户锚点」整段成一个切片（开场段不按切片轮数细分）。
@@ -1120,6 +1160,7 @@ def ensure_first_anchor(username, sid):
     return {"added": True, "index": first_user}
 
 
+@_locked
 def rename_scene_anchor(username, sid, round_no, label):
     """按轮次更新锚点消息的场景标签（切片面板改名 → 分割线同步）。
 
@@ -1150,6 +1191,7 @@ def rename_scene_anchor(username, sid, round_no, label):
     return None
 
 
+@_locked
 def append_message(username, sid, role, content, reasoning=None, files=None, interrupted=None):
     session = get_session(username, sid) or create_session(username)
     message = {"role": role, "content": content, "ts": time.time()}
