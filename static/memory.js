@@ -475,9 +475,10 @@ function syncSceneDividerText(startRound, name) {
       if (seen === startRound) {
         const div = document.querySelector('.scene-divider[data-index="' + i + '"]');
         if (div) {
+          div.dataset.label = (name || "").trim(); // 同步自定义名，供默认编号重排时区分
           const lbl = div.querySelector(".scene-divider-label");
           if (lbl) {
-            const shown = (name || "").trim() || (typeof defaultSceneName === "function" ? defaultSceneName(i) : "");
+            const shown = div.dataset.label || (typeof defaultSceneName === "function" ? defaultSceneName(i) : "");
             lbl.textContent = shown;
             lbl.title = shown;
           }

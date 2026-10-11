@@ -299,11 +299,13 @@ async function openSession(id, opts = {}) {
     });
   }
   // 渲染（msgIndex 用全局下标，与后端 delete_message 对齐）
-  // 场景锚点登记：本页消息中带 scene_break 的 user 消息下标（升序），
-  // 供分场默认命名「第 N 场」计数
-  sceneAnchors = (s.messages || [])
-    .filter((m) => m.role === "user" && m.scene_break)
-    .map((m) => m.index);
+  // 场景锚点登记：优先用后端返回的全会话锚点下标（升序），保证长对话分页下
+  // 「第 N 场」默认命名仍按全局位置计数；后端未提供时退回按当前页消息统计。
+  sceneAnchors = Array.isArray(s.scene_anchors)
+    ? s.scene_anchors.slice()
+    : (s.messages || [])
+        .filter((m) => m.role === "user" && m.scene_break)
+        .map((m) => m.index);
   (s.messages || []).forEach((m) => {
     if (m.role === "assistant") {
       renderAssistant(m.content, m.reasoning || null, m.index, !!m.interrupted);

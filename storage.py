@@ -700,6 +700,18 @@ def get_session_messages(username, sid, limit=30, before=None):
             (sid, end - start, start),
         ).fetchall()
         session = _row_to_session(row)  # 仅取元信息（messages 留空，避免整坨读）
+        # 全会话场景锚点下标（升序）：前端据此对「第 N 场」默认命名按位置排序，
+        # 不能只依赖当前分页——长对话下早分页的锚点不在本页会导致编号全部从 1 重数。
+        anchor_indices = []
+        pos = 0
+        for r in conn.execute(
+            "SELECT role, scene_break FROM messages WHERE session_id = ? AND role != 'system' "
+            "ORDER BY id",
+            (sid,),
+        ):
+            if r["scene_break"] and r["role"] == "user":
+                anchor_indices.append(pos)
+            pos += 1
     return {
         "id": session["id"],
         "title": session["title"],
@@ -709,6 +721,7 @@ def get_session_messages(username, sid, limit=30, before=None):
         "params": session["params"],
         "vm": session.get("vm", _parse_vm(None)),
         "messages": [{"index": start + i, **_row_to_msg(r)} for i, r in enumerate(page)],
+        "scene_anchors": anchor_indices,
         "total": total,
         "has_more": start > 0,
     }
@@ -1412,6 +1425,32 @@ def ensure_first_anchor(username, sid):
         conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ? AND username = ?",
                      (time.time(), sid, username))
         return {"added": True, "index": index}
+
+
+@_locked
+def get_scene_anchor_indices(username, sid):
+    """返回会话内全部场景锚点（user 消息 scene_break=1）的全局下标（升序）。
+
+    下标为「非 system 消息」中的位置（与前端 msgIndex / delete_message 一致），
+    供前端对「第 N 场」默认命名按全局位置排序。会话不存在返回 None。
+    """
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT id FROM sessions WHERE id = ? AND username = ?", (sid, username)
+        ).fetchone()
+        if row is None:
+            return None
+        out = []
+        pos = 0
+        for r in conn.execute(
+            "SELECT role, scene_break FROM messages WHERE session_id = ? AND role != 'system' "
+            "ORDER BY id",
+            (sid,),
+        ):
+            if r["scene_break"] and r["role"] == "user":
+                out.append(pos)
+            pos += 1
+        return out
 
 
 @_locked

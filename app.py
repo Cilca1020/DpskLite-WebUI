@@ -1190,10 +1190,13 @@ def api_scene_break(sid, index):
     # 打锚点时确保存在「开场锚点」：首个锚点打在中间（前面无任何锚点）时，
     # 自动给首条 user 消息补一个锚点，使「首轮 → 第一个用户锚点」整段成一个切片
     first_anchor = storage.ensure_first_anchor(username, sid) if scene_break else None
+    # 返回更新后的全会话锚点下标：前端据此重排「第 N 场」默认命名（不依赖当前分页）
+    anchors = storage.get_scene_anchor_indices(username, sid) or []
     return jsonify({
         "ok": True,
         "message": message,
         "first_anchor": first_anchor or {"added": False, "index": -1},
+        "scene_anchors": anchors,
     })
 
 

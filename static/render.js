@@ -230,6 +230,22 @@ function defaultSceneName(msgIndex) {
   return "第 " + (before + 1) + " 场";
 }
 
+// 刷新单条分割线标签：有自定义名（dataset.label）用自定义名，否则按锚点位置重算默认编号
+function refreshSceneDividerLabel(dv) {
+  if (!dv) return;
+  const lbl = dv.querySelector(".scene-divider-label");
+  if (!lbl) return;
+  const shown = (dv.dataset.label || "").trim() || defaultSceneName(Number(dv.dataset.index));
+  lbl.textContent = shown;
+  lbl.title = shown;
+}
+
+// 重排全部分割线的默认编号（自定义名不受影响）。
+// 倒序 / 中间插入锚点后，既有分割线的「第 N 场」会过期，需统一重排避免重号。
+function renumberSceneDividers() {
+  document.querySelectorAll(".scene-divider").forEach(refreshSceneDividerLabel);
+}
+
 // 弹出分场命名输入（原生 prompt，显式确认）。取消返回 null；返回裁剪后的名称（可空串）。
 function promptSceneLabel(msgIndex, current) {
   const tip = current === undefined
@@ -252,8 +268,11 @@ async function addSceneBreak(row, msgIndex, existingLabel) {
       { scene_break: true, scene_label: label }
     );
     if (r && r.error) return showToast(r.error);
-    // 更新锚点登记（供后续默认命名计数）
-    if (!sceneAnchors.includes(msgIndex)) {
+    // 锚点登记以后端返回的全会话锚点为准（含自动补的开场锚点），
+    // 保证长对话分页下「第 N 场」仍按全局位置编号；后端未提供时退回本地登记
+    if (Array.isArray(r.scene_anchors)) {
+      sceneAnchors = r.scene_anchors.slice();
+    } else if (!sceneAnchors.includes(msgIndex)) {
       sceneAnchors.push(msgIndex);
       sceneAnchors.sort((a, b) => a - b);
     }
@@ -275,6 +294,8 @@ async function addSceneBreak(row, msgIndex, existingLabel) {
     const old = document.querySelector('.scene-divider[data-index="' + msgIndex + '"]');
     if (old) old.remove();
     row.parentNode.insertBefore(buildSceneDivider(label, msgIndex), row);
+    // 新增/移动锚点后，既有分割线的默认编号需统一重排（避免倒序 / 中间插入时重号）
+    renumberSceneDividers();
     // 同步锚点按钮状态：新打 = 高亮（编辑分场名称）
     const ownRow = document.querySelector('.msg-row[data-msg-index="' + msgIndex + '"]');
     if (ownRow) {
@@ -323,9 +344,13 @@ async function removeSceneBreak(msgIndex) {
       { scene_break: false }
     );
     if (r && r.error) return showToast(r.error);
-    sceneAnchors = sceneAnchors.filter((i) => i !== msgIndex);
+    // 锚点登记以后端返回的全会话锚点为准（否则退回本地过滤）
+    sceneAnchors = Array.isArray(r.scene_anchors)
+      ? r.scene_anchors.slice()
+      : sceneAnchors.filter((i) => i !== msgIndex);
     const dv = document.querySelector('.scene-divider[data-index="' + msgIndex + '"]');
     if (dv) dv.remove();
+    renumberSceneDividers(); // 删除锚点后重排剩余分割线默认编号
     // 同步锚点按钮状态：取消高亮，恢复「在此分场」提示
     const row = document.querySelector('.msg-row[data-msg-index="' + msgIndex + '"]');
     if (row) {
@@ -347,11 +372,12 @@ function buildSceneDivider(label, msgIndex) {
   const dv = document.createElement("div");
   dv.className = "scene-divider";
   dv.dataset.index = msgIndex;
+  dv.dataset.label = (label || "").trim(); // 用户自定义名；空 = 默认「第 N 场」
   const lineBefore = document.createElement("span");
   lineBefore.className = "scene-divider-line";
   const name = document.createElement("span");
   name.className = "scene-divider-label";
-  const shown = (label || "").trim() || defaultSceneName(msgIndex);
+  const shown = dv.dataset.label || defaultSceneName(msgIndex);
   name.textContent = shown;
   name.title = shown;
   const lineAfter = document.createElement("span");
@@ -365,7 +391,7 @@ function buildSceneDivider(label, msgIndex) {
   editBtn.innerHTML = svgIcon("edit");
   editBtn.onclick = async (e) => {
     e.stopPropagation();
-    const nl = promptSceneLabel(msgIndex, name.textContent);
+    const nl = promptSceneLabel(msgIndex, dv.dataset.label);
     if (nl === null) return;
     try {
       const r = await apiPost(
@@ -373,9 +399,8 @@ function buildSceneDivider(label, msgIndex) {
         { scene_break: true, scene_label: nl }
       );
       if (r && r.error) return showToast(r.error);
-      const updated = nl || defaultSceneName(msgIndex);
-      name.textContent = updated;
-      name.title = updated;
+      dv.dataset.label = nl; // 新自定义名（空 = 恢复默认编号）
+      refreshSceneDividerLabel(dv);
       // 双向同步：把新名字写回已落袋切片实体（切片管理面板显示名跟随）
       if (window.syncSliceNameFromAnchor) window.syncSliceNameFromAnchor(msgIndex, nl);
       showToast("已保存");
