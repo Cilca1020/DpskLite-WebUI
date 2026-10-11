@@ -1194,12 +1194,15 @@ body {
   color: var(--accent);
   font-weight: 600;
 }
-/* 摘要卡「切片摘要」分页：只读切片条目 */
+/* 摘要卡「切片摘要」分页：只读切片条目（超高时内部滚动，管理按钮保持在列表下方原位） */
 .slice-mini-list {
+  max-height: 260px;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 8px;
   margin: 0 0 10px;
+  padding-right: 4px;
 }
 .slice-mini-item {
   padding: 10px 12px;
