@@ -49,6 +49,12 @@ def _connect():
     conn = sqlite3.connect(DB_FILE, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # 数据库重构 P0：开启 WAL（提升读写并发，避免读被写阻塞）+ busy_timeout
+    # （锁冲突时等待而非立刻抛 database is locked）。
+    # journal_mode=WAL 为持久化设置（写入库文件，其后所有连接自动生效）；
+    # busy_timeout 为连接级设置，需每次连接设置。
+    conn.execute(f"PRAGMA journal_mode={config.SQLITE_JOURNAL_MODE}")
+    conn.execute(f"PRAGMA busy_timeout={int(config.SQLITE_BUSY_TIMEOUT_MS)}")
     return conn
 
 
@@ -69,11 +75,27 @@ def _init_db():
                 updated_at REAL NOT NULL,
                 model TEXT,
                 params TEXT,
-                messages TEXT NOT NULL,
                 auto_title_generated INTEGER NOT NULL DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_sessions_user_updated
                 ON sessions(username, updated_at DESC);
+            CREATE TABLE IF NOT EXISTS messages (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id   TEXT    NOT NULL,
+                username     TEXT    NOT NULL,
+                role         TEXT    NOT NULL,
+                content      TEXT    NOT NULL DEFAULT '',
+                ts           REAL    NOT NULL,
+                reasoning    TEXT,
+                files        TEXT,
+                interrupted  INTEGER NOT NULL DEFAULT 0,
+                scene_break  INTEGER NOT NULL DEFAULT 0,
+                scene_label  TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_messages_session_id
+                ON messages(session_id, id);
+            CREATE INDEX IF NOT EXISTS idx_messages_session_role
+                ON messages(session_id, role, id);
         """)
         columns = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
         if "auto_title_generated" not in columns:
@@ -87,6 +109,16 @@ def _init_db():
             conn.execute("ALTER TABLE sessions ADD COLUMN memory TEXT")
             # 老会话：把已有的 vm 迁移进 memory.vector，避免新面板丢配置
             _migrate_vm_to_memory(conn)
+        # P1/P4：旧列 sessions.messages → 独立 messages 表
+        #  - 存在旧列：先幂等回填（若尚未回填），成功后归档删除该列（P4）
+        #  - 不存在（全新库或已迁移）：跳过
+        if "messages" in columns:
+            _migrate_messages(conn)
+            try:
+                conn.execute("ALTER TABLE sessions DROP COLUMN messages")
+                print("[migrate] P4: 已移除旧列 sessions.messages（数据由 messages 表承载）")
+            except sqlite3.OperationalError as e:  # noqa: BLE001
+                print(f"[migrate] P4: 删除旧列失败（SQLite 版本过低？）: {e}")
 
 
 def _migrate_vm_to_memory(conn):
@@ -107,6 +139,79 @@ def _migrate_vm_to_memory(conn):
             "UPDATE sessions SET memory = ? WHERE id = ?",
             (json.dumps(memory, ensure_ascii=False), row["id"]),
         )
+
+
+def _migrate_messages(conn):
+    """P1：把旧列 sessions.messages（整块 JSON）幂等回填到独立 messages 表。
+
+    幂等：只回填 messages 表中尚不存在的会话，可重复执行（重启不会重复插入）。
+    顺序：按会话、按原数组顺序逐条插入，保证同一会话内 id 升序 == 原消息顺序。
+    校验：每个会话回填后 COUNT(*) 必须等于旧 JSON 中有效消息条数，否则抛错；
+          抛错会使 _init_db 的连接上下文回滚本次全部回填（表保留为空），下次重跑。
+    读路径：本阶段不改任何读函数，仍走旧列（本函数只写 messages 表）。
+    """
+    rows = conn.execute("SELECT id, username, messages FROM sessions").fetchall()
+    if not rows:
+        return
+    done = {r[0] for r in conn.execute("SELECT DISTINCT session_id FROM messages")}
+    migrated_sessions = 0
+    migrated_msgs = 0
+    for r in rows:
+        sid = r["id"]
+        if sid in done:
+            continue
+        username, blob = r["username"], r["messages"]
+        try:
+            raw = json.loads(blob) if blob else []
+        except (TypeError, ValueError):
+            print(f"[migrate] 跳过无法解析的会话 {sid}（messages 非法 JSON）")
+            raw = []
+        if not isinstance(raw, list):
+            raw = []
+        valid = [m for m in raw if isinstance(m, dict)]
+        if not valid:
+            # 空会话无需回填，也不写入 messages（避免每次重启重复扫描同一批空会话）
+            continue
+        if len(valid) != len(raw):
+            print(f"[migrate] 会话 {sid}: 忽略 {len(raw) - len(valid)} 条非对象消息")
+        # 清理可能的上次半成品后重插（保证幂等可重跑）
+        conn.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
+        for m in valid:
+            try:
+                ts = float(m.get("ts"))
+            except (TypeError, ValueError):
+                ts = 0.0
+            files = m.get("files")
+            conn.execute(
+                "INSERT INTO messages(session_id, username, role, content, ts, "
+                "reasoning, files, interrupted, scene_break, scene_label) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    sid,
+                    username,
+                    str(m.get("role") or ""),
+                    m.get("content") or "",
+                    ts,
+                    m.get("reasoning"),
+                    json.dumps(files, ensure_ascii=False) if files is not None else None,
+                    1 if m.get("interrupted") else 0,
+                    1 if m.get("scene_break") else 0,
+                    m.get("scene_label"),
+                ),
+            )
+        n = conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE session_id = ?", (sid,)
+        ).fetchone()[0]
+        if n != len(valid):
+            raise RuntimeError(
+                f"消息回填校验失败: session={sid} 期望={len(valid)} 实际={n}"
+            )
+        migrated_sessions += 1
+        migrated_msgs += n
+    if migrated_sessions == 0:
+        return
+    conn.commit()
+    print(f"[migrate] messages 表回填完成: {migrated_sessions} 个会话 / {migrated_msgs} 条消息")
 
 
 def _default_memory():
@@ -337,14 +442,17 @@ def _migrate_legacy_sessions(username):
                 continue
             conn.execute(
                 """INSERT OR IGNORE INTO sessions
-                   (id, username, title, created_at, updated_at, model, params, messages)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (id, username, title, created_at, updated_at, model, params)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (session["id"], username, session.get("title", "未命名"),
                  session.get("created_at", time.time()),
                  session.get("updated_at", session.get("created_at", time.time())),
-                 session.get("model"), json.dumps(session.get("params"), ensure_ascii=False),
-                 json.dumps(session.get("messages", []), ensure_ascii=False)),
+                 session.get("model"), json.dumps(session.get("params"), ensure_ascii=False)),
             )
+            # P4：消息行级写入 messages 表（旧列已废弃）
+            for m in session.get("messages") or []:
+                if isinstance(m, dict):
+                    _insert_message_row(conn, session["id"], username, m)
 
 
 def create_user(username, password):
@@ -427,14 +535,64 @@ def _parse_vm(raw):
     }
 
 
-def _row_to_session(row):
+def _row_to_msg(r):
+    """messages 表行 → 消息 dict（只还原存在的字段，保持与旧 JSON 结构一致）。"""
+    m = {"role": r["role"], "content": r["content"], "ts": r["ts"]}
+    if r["reasoning"] is not None:
+        m["reasoning"] = r["reasoning"]
+    if r["files"]:
+        try:
+            m["files"] = json.loads(r["files"])
+        except (TypeError, ValueError):
+            pass
+    if r["interrupted"]:
+        m["interrupted"] = True
+    if r["scene_break"]:
+        m["scene_break"] = True
+    if r["scene_label"] is not None:
+        m["scene_label"] = r["scene_label"]
+    return m
+
+
+def _insert_message_row(conn, sid, username, m):
+    """向 messages 表插入一条消息；ts 非数值时回退 0。"""
+    try:
+        ts = float(m.get("ts"))
+    except (TypeError, ValueError):
+        ts = 0.0
+    files = m.get("files")
+    conn.execute(
+        "INSERT INTO messages(session_id, username, role, content, ts, "
+        "reasoning, files, interrupted, scene_break, scene_label) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            sid, username, str(m.get("role") or ""), m.get("content") or "", ts,
+            m.get("reasoning"),
+            json.dumps(files, ensure_ascii=False) if files is not None else None,
+            1 if m.get("interrupted") else 0,
+            1 if m.get("scene_break") else 0,
+            m.get("scene_label"),
+        ),
+    )
+
+
+def _row_to_session(row, conn=None):
+    """sessions 行 → 会话 dict；messages 从 messages 表按 id 升序读取（conn 必传）。"""
     memory = _parse_memory(row["memory"] if "memory" in row.keys() else None)
+    messages = []
+    if conn is not None:
+        messages = [
+            _row_to_msg(r)
+            for r in conn.execute(
+                "SELECT * FROM messages WHERE session_id = ? ORDER BY id", (row["id"],)
+            )
+        ]
     return {"id": row["id"], "title": row["title"], "created_at": row["created_at"],
             "updated_at": row["updated_at"], "model": row["model"],
             "params": json.loads(row["params"]) if row["params"] else None,
             "vm": memory["vector"],   # 兼容旧前端：vm 从 memory.vector 权威读取
             "memory": memory,
-            "messages": json.loads(row["messages"])}
+            "messages": messages}
 
 
 def create_session(username, title=None, model=None, params=None, vm=None, memory=None):
@@ -447,10 +605,10 @@ def create_session(username, title=None, model=None, params=None, vm=None, memor
                "vm": mem["vector"], "memory": mem, "messages": []}
     with _connect() as conn:
         conn.execute(
-            "INSERT INTO sessions(id, username, title, created_at, updated_at, model, params, messages, vm, memory) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO sessions(id, username, title, created_at, updated_at, model, params, vm, memory) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (session["id"], username, session["title"], now, now, model,
-             json.dumps(params, ensure_ascii=False), json.dumps([]),
+             json.dumps(params, ensure_ascii=False),
              json.dumps(session["vm"], ensure_ascii=False),
              json.dumps(mem, ensure_ascii=False)),
         )
@@ -460,7 +618,9 @@ def create_session(username, title=None, model=None, params=None, vm=None, memor
 def get_session(username, sid):
     with _connect() as conn:
         row = conn.execute("SELECT * FROM sessions WHERE id = ? AND username = ?", (sid, username)).fetchone()
-    return _row_to_session(row) if row else None
+        if row is None:
+            return None
+        return _row_to_session(row, conn)
 
 
 def get_session_messages(username, sid, limit=30, before=None):
@@ -471,21 +631,32 @@ def get_session_messages(username, sid, limit=30, before=None):
     返回 dict（含分页信息）或 None（会话不存在）。
     返回的 messages 每项带全局 index（会话内 user/assistant 消息从 0 起的下标，
     与 delete_message 的删除下标一致），供前端渲染与后续加载定位。
+    P3：直接对 messages 表分页（COUNT + LIMIT/OFFSET），不再读整坨。
     """
-    session = get_session(username, sid)
-    if session is None:
-        return None
-    chat = [m for m in session["messages"] if m.get("role") != "system"]
-    total = len(chat)
-    if before is None:
-        end = total
-    else:
-        try:
-            end = max(0, min(int(before), total))
-        except (TypeError, ValueError):
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM sessions WHERE id = ? AND username = ?", (sid, username)
+        ).fetchone()
+        if row is None:
+            return None
+        total = conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE session_id = ? AND role != 'system'",
+            (sid,),
+        ).fetchone()[0]
+        if before is None:
             end = total
-    start = max(0, end - limit)
-    page = chat[start:end]
+        else:
+            try:
+                end = max(0, min(int(before), total))
+            except (TypeError, ValueError):
+                end = total
+        start = max(0, end - limit)
+        page = conn.execute(
+            "SELECT * FROM messages WHERE session_id = ? AND role != 'system' "
+            "ORDER BY id LIMIT ? OFFSET ?",
+            (sid, end - start, start),
+        ).fetchall()
+        session = _row_to_session(row)  # 仅取元信息（messages 留空，避免整坨读）
     return {
         "id": session["id"],
         "title": session["title"],
@@ -494,21 +665,25 @@ def get_session_messages(username, sid, limit=30, before=None):
         "model": session["model"],
         "params": session["params"],
         "vm": session.get("vm", _parse_vm(None)),
-        "messages": [{"index": start + i, **m} for i, m in enumerate(page)],
+        "messages": [{"index": start + i, **_row_to_msg(r)} for i, r in enumerate(page)],
         "total": total,
         "has_more": start > 0,
     }
 
 
 def _save_session(username, session):
+    """保存会话的非消息字段（标题 / 模型 / 参数 / 记忆）。
+
+    P3 起消息改由 messages 表行级维护，此处**不再写 messages 列**（旧列作为
+    只读快照冻结在 P1 状态），从而消除整坨读写。
+    """
     memory = _parse_memory(session.get("memory"))
     vm = memory["vector"]
     with _connect() as conn:
         conn.execute(
-            "UPDATE sessions SET title = ?, updated_at = ?, model = ?, params = ?, messages = ?, vm = ?, memory = ? WHERE id = ? AND username = ?",
+            "UPDATE sessions SET title = ?, updated_at = ?, model = ?, params = ?, vm = ?, memory = ? WHERE id = ? AND username = ?",
             (session["title"], session.get("updated_at", time.time()), session.get("model"),
              json.dumps(session.get("params"), ensure_ascii=False),
-             json.dumps(session.get("messages", []), ensure_ascii=False),
              json.dumps(vm, ensure_ascii=False),
              json.dumps(memory, ensure_ascii=False),
              session["id"], username),
@@ -1020,30 +1195,40 @@ def import_session(username, data):
     }
     with _connect() as conn:
         conn.execute(
-            "INSERT INTO sessions(id, username, title, created_at, updated_at, model, params, messages, vm, memory) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO sessions(id, username, title, created_at, updated_at, model, params, vm, memory) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (session["id"], username, title, created_at, updated_at, session["model"],
              json.dumps(session["params"], ensure_ascii=False),
-             json.dumps(messages, ensure_ascii=False),
              json.dumps(session["vm"], ensure_ascii=False),
              json.dumps(mem, ensure_ascii=False)),
         )
+        # 消息行级写入 messages 表
+        for m in messages:
+            _insert_message_row(conn, session["id"], username, m)
     return session
 
 
 def list_sessions(username):
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT id, title, model, created_at, updated_at, messages FROM sessions WHERE username = ? ORDER BY updated_at DESC",
+            "SELECT s.id, s.title, s.model, s.created_at, s.updated_at, "
+            "(SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS message_count "
+            "FROM sessions s WHERE s.username = ? ORDER BY s.updated_at DESC",
             (username,),
         ).fetchall()
-    return [{"id": row["id"], "title": row["title"], "model": row["model"],
-             "created_at": row["created_at"], "updated_at": row["updated_at"],
-             "message_count": len(json.loads(row["messages"]))} for row in rows]
+        return [{"id": row["id"], "title": row["title"], "model": row["model"],
+                 "created_at": row["created_at"], "updated_at": row["updated_at"],
+                 "message_count": row["message_count"]} for row in rows]
 
 
 def delete_session(username, sid):
+    """删除会话及其全部消息行。
+
+    P3：messages 表未定义外键，故**显式清理**该会话的消息行，避免留下孤儿数据
+    （会话已删但 messages 仍有行）。两个删除在同一连接内，异常整体回滚。
+    """
     with _connect() as conn:
+        conn.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
         conn.execute("DELETE FROM sessions WHERE id = ? AND username = ?", (sid, username))
 
 
@@ -1069,8 +1254,9 @@ def cleanup_empty_sessions(username, exclude_id=None):
     with _connect() as conn:
         rows = conn.execute("SELECT * FROM sessions WHERE username = ?", (username,)).fetchall()
         for row in rows:
-            session = _row_to_session(row)
+            session = _row_to_session(row, conn)
             if session["id"] != exclude_id and not session["messages"] and not _is_user_configured(session):
+                conn.execute("DELETE FROM messages WHERE session_id = ?", (session["id"],))
                 conn.execute("DELETE FROM sessions WHERE id = ? AND username = ?", (session["id"], username))
                 removed.append(session["id"])
     return removed
@@ -1078,16 +1264,28 @@ def cleanup_empty_sessions(username, exclude_id=None):
 
 @_locked
 def delete_message(username, sid, index):
-    session = get_session(username, sid)
-    if session is None:
-        return None
-    indices = [i for i, message in enumerate(session["messages"]) if message.get("role") != "system"]
-    if index < 0 or index >= len(indices):
-        return None
-    del session["messages"][indices[index]]
-    session["updated_at"] = time.time()
-    _save_session(username, session)
-    return session
+    """删除第 index 条非 system 消息（P3 行级：OFFSET 定位 → DELETE 一行）。"""
+    with _connect() as conn:
+        row = conn.execute("SELECT id FROM sessions WHERE id = ? AND username = ?", (sid, username)).fetchone()
+        if row is None:
+            return None
+        try:
+            index = int(index)
+        except (TypeError, ValueError):
+            return None
+        if index < 0:
+            return None
+        target = conn.execute(
+            "SELECT id FROM messages WHERE session_id = ? AND role != 'system' "
+            "ORDER BY id LIMIT 1 OFFSET ?",
+            (sid, index),
+        ).fetchone()
+        if target is None:
+            return None
+        conn.execute("DELETE FROM messages WHERE id = ?", (target["id"],))
+        conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ? AND username = ?",
+                     (time.time(), sid, username))
+    return get_session(username, sid)
 
 
 @_locked
@@ -1098,29 +1296,40 @@ def set_message_scene_break(username, sid, index, scene_break, scene_label=None)
     scene_break=True 打锚点（scene_label 可空，空则前端显示默认「第 N 场」）；
     scene_break=False 清除锚点。锚点只允许打在 user 消息（轮首）上。
     返回更新后的消息 dict；会话不存在 / 下标越界 / 非 user 消息返回 None。
+    P3：行级（OFFSET 定位 → UPDATE 一行）。
     """
-    session = get_session(username, sid)
-    if session is None:
-        return None
-    indices = [i for i, message in enumerate(session["messages"]) if message.get("role") != "system"]
-    if index < 0 or index >= len(indices):
-        return None
-    message = session["messages"][indices[index]]
-    if message.get("role") != "user":
-        return None
-    if scene_break:
-        message["scene_break"] = True
-        label = str(scene_label or "").strip()
-        if label:
-            message["scene_label"] = label[:50]
+    with _connect() as conn:
+        row = conn.execute("SELECT id FROM sessions WHERE id = ? AND username = ?", (sid, username)).fetchone()
+        if row is None:
+            return None
+        try:
+            index = int(index)
+        except (TypeError, ValueError):
+            return None
+        if index < 0:
+            return None
+        target = conn.execute(
+            "SELECT * FROM messages WHERE session_id = ? AND role != 'system' "
+            "ORDER BY id LIMIT 1 OFFSET ?",
+            (sid, index),
+        ).fetchone()
+        if target is None or target["role"] != "user":
+            return None
+        if scene_break:
+            label = str(scene_label or "").strip()
+            conn.execute(
+                "UPDATE messages SET scene_break = 1, scene_label = ? WHERE id = ?",
+                (label[:50] if label else None, target["id"]),
+            )
         else:
-            message.pop("scene_label", None)
-    else:
-        message.pop("scene_break", None)
-        message.pop("scene_label", None)
-    session["updated_at"] = time.time()
-    _save_session(username, session)
-    return message
+            conn.execute(
+                "UPDATE messages SET scene_break = 0, scene_label = NULL WHERE id = ?",
+                (target["id"],),
+            )
+        conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ? AND username = ?",
+                     (time.time(), sid, username))
+        updated = conn.execute("SELECT * FROM messages WHERE id = ?", (target["id"],)).fetchone()
+    return _row_to_msg(updated)
 
 
 @_locked
@@ -1136,28 +1345,30 @@ def ensure_first_anchor(username, sid):
     首条 user 消息下标（非 system，与前端 msgIndex 一致，供就地插入分割线）；
     会话不存在返回 None。
     """
-    session = get_session(username, sid)
-    if session is None:
-        return None
-    indices = [i for i, m in enumerate(session["messages"]) if m.get("role") != "system"]
-    first_user = next(
-        (k for k, i in enumerate(indices) if session["messages"][i].get("role") == "user"), None
-    )
-    if first_user is None:
-        return {"added": False, "index": -1}
-    has_anchor = any(
-        session["messages"][i].get("scene_break")
-        for i in indices
-        if session["messages"][i].get("role") == "user"
-    )
-    first_msg = session["messages"][indices[first_user]]
-    if not has_anchor or first_msg.get("scene_break"):
-        return {"added": False, "index": first_user}
-    first_msg["scene_break"] = True
-    first_msg.pop("scene_label", None)
-    session["updated_at"] = time.time()
-    _save_session(username, session)
-    return {"added": True, "index": first_user}
+    with _connect() as conn:
+        row = conn.execute("SELECT id FROM sessions WHERE id = ? AND username = ?", (sid, username)).fetchone()
+        if row is None:
+            return None
+        users = conn.execute(
+            "SELECT * FROM messages WHERE session_id = ? AND role = 'user' ORDER BY id", (sid,)
+        ).fetchall()
+        if not users:
+            return {"added": False, "index": -1}
+        first = users[0]
+        # 首条 user 消息在「非 system」列表中的下标 = 其前所有非 system 行数
+        index = conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE session_id = ? AND role != 'system' AND id < ?",
+            (sid, first["id"]),
+        ).fetchone()[0]
+        has_anchor = any(u["scene_break"] for u in users)
+        if not has_anchor or first["scene_break"]:
+            return {"added": False, "index": index}
+        conn.execute(
+            "UPDATE messages SET scene_break = 1, scene_label = NULL WHERE id = ?", (first["id"],)
+        )
+        conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ? AND username = ?",
+                     (time.time(), sid, username))
+        return {"added": True, "index": index}
 
 
 @_locked
@@ -1168,27 +1379,33 @@ def rename_scene_anchor(username, sid, round_no, label):
     该消息带锚点时更新 scene_label（空串删除标签），未带锚点则不动（返回 ok 但 changed=False）。
     返回 {"ok": bool, "changed": bool}；会话不存在 / 轮次越界返回 None。
     """
-    session = get_session(username, sid)
-    if session is None:
-        return None
-    seen = 0
-    for message in session["messages"]:
-        if message.get("role") == "system":
-            continue
-        if message.get("role") == "user":
-            seen += 1
-            if seen == round_no:
-                if not message.get("scene_break"):
-                    return {"ok": True, "changed": False}
-                label = str(label or "").strip()
-                if label:
-                    message["scene_label"] = label[:50]
-                else:
-                    message.pop("scene_label", None)
-                session["updated_at"] = time.time()
-                _save_session(username, session)
-                return {"ok": True, "changed": True}
-    return None
+    with _connect() as conn:
+        row = conn.execute("SELECT id FROM sessions WHERE id = ? AND username = ?", (sid, username)).fetchone()
+        if row is None:
+            return None
+        try:
+            round_no = int(round_no)
+        except (TypeError, ValueError):
+            return None
+        if round_no < 1:
+            return None
+        target = conn.execute(
+            "SELECT * FROM messages WHERE session_id = ? AND role = 'user' "
+            "ORDER BY id LIMIT 1 OFFSET ?",
+            (sid, round_no - 1),
+        ).fetchone()
+        if target is None:
+            return None
+        if not target["scene_break"]:
+            return {"ok": True, "changed": False}
+        label = str(label or "").strip()
+        conn.execute(
+            "UPDATE messages SET scene_label = ? WHERE id = ?",
+            (label[:50] if label else None, target["id"]),
+        )
+        conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ? AND username = ?",
+                     (time.time(), sid, username))
+        return {"ok": True, "changed": True}
 
 
 @_locked
@@ -1204,10 +1421,11 @@ def append_message(username, sid, role, content, reasoning=None, files=None, int
                              "binary": bool(f.get("binary", False))} for f in files]
     if interrupted is not None:
         message["interrupted"] = bool(interrupted)
-    session["messages"].append(message)
-    session["updated_at"] = time.time()
-    _save_session(username, session)
-    return session
+    with _connect() as conn:
+        _insert_message_row(conn, session["id"], username, message)
+        conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ? AND username = ?",
+                     (time.time(), session["id"], username))
+    return get_session(username, session["id"])
 
 
 def _read_presets():

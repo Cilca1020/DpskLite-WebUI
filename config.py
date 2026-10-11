@@ -153,3 +153,7 @@ SUMMARY_MAX_CHARS = 2000
 
 # 四层注入到上下文的总字符硬上限（防止卡片/事实/摘要过长挤占完整对话）
 MEMORY_CONTEXT_MAX_CHARS = 12000
+
+# ------------------------- SQLite 连接参数（数据库重构 P0） -------------------------
+SQLITE_JOURNAL_MODE = "WAL"       # 读写并发更好（持久化设置，写入库文件后长期生效）
+SQLITE_BUSY_TIMEOUT_MS = 10000    # 锁冲突时等待毫秒数（连接级，与 timeout=10 秒一致）
