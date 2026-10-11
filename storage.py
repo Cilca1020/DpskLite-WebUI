@@ -119,6 +119,8 @@ def _init_db():
                 print("[migrate] P4: 已移除旧列 sessions.messages（数据由 messages 表承载）")
             except sqlite3.OperationalError as e:  # noqa: BLE001
                 print(f"[migrate] P4: 删除旧列失败（SQLite 版本过低？）: {e}")
+        # P4-c：确保 messages.session_id 具备外键 ON DELETE CASCADE（幂等，无外键才重建）
+        _migrate_messages_fk(conn)
 
 
 def _migrate_vm_to_memory(conn):
@@ -212,6 +214,47 @@ def _migrate_messages(conn):
         return
     conn.commit()
     print(f"[migrate] messages 表回填完成: {migrated_sessions} 个会话 / {migrated_msgs} 条消息")
+
+
+def _migrate_messages_fk(conn):
+    """P4-c：为 messages.session_id 添加外键 ON DELETE CASCADE（SQLite 需重建表）。
+
+    幂等：已存在外键则跳过。重建前先清理孤儿行（否则 INSERT 进带外键的新表会失败）。
+    重建无法用 ALTER 完成，故 CREATE 新表 → INSERT SELECT → DROP → RENAME（整体一个事务）。
+    """
+    if conn.execute("PRAGMA foreign_key_list(messages)").fetchall():
+        return
+    # 清理孤儿（新表带外键，孤儿会使 INSERT 违反约束）
+    conn.execute(
+        "DELETE FROM messages WHERE session_id NOT IN (SELECT id FROM sessions)"
+    )
+    conn.executescript("""
+        DROP TABLE IF EXISTS messages_new;
+        BEGIN;
+        CREATE TABLE messages_new (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id   TEXT    NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            username     TEXT    NOT NULL,
+            role         TEXT    NOT NULL,
+            content      TEXT    NOT NULL DEFAULT '',
+            ts           REAL    NOT NULL,
+            reasoning    TEXT,
+            files        TEXT,
+            interrupted  INTEGER NOT NULL DEFAULT 0,
+            scene_break  INTEGER NOT NULL DEFAULT 0,
+            scene_label  TEXT
+        );
+        INSERT INTO messages_new(id, session_id, username, role, content, ts,
+            reasoning, files, interrupted, scene_break, scene_label)
+            SELECT id, session_id, username, role, content, ts,
+            reasoning, files, interrupted, scene_break, scene_label FROM messages;
+        DROP TABLE messages;
+        ALTER TABLE messages_new RENAME TO messages;
+        CREATE INDEX idx_messages_session_id ON messages(session_id, id);
+        CREATE INDEX idx_messages_session_role ON messages(session_id, role, id);
+        COMMIT;
+    """)
+    print("[migrate] P4-c: messages 表已重建并添加外键 ON DELETE CASCADE")
 
 
 def _default_memory():
