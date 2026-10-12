@@ -31,10 +31,9 @@
     setPending("");
   }
 
-  // 从历史消息恢复注释（编辑提问时复用）：有内容则打开面板，便于修改后重发
+  // 从历史消息恢复注释（编辑提问时复用）：只回填内容并高亮按钮，不自动打开面板
   function restore(text) {
     setPending(text || "");
-    if ((text || "").trim()) openPanel();
   }
 
   /* ---------------- 模态面板 ---------------- */
@@ -51,13 +50,15 @@
     const foot = el("noteModalFoot");
 
     if (title) title.textContent = isView ? "本轮注释（仅本次对话生效）" : "本轮注释";
-    if (hint) hint.hidden = isView;
-    if (input) input.hidden = isView;
+    // 统一用 .hidden class 切换（全局 .hidden 为 display:none !important），
+    // 不能用 el.hidden = bool —— 那只会切 hidden 属性，元素自带的 .hidden class 仍在隐藏它。
+    if (hint) hint.classList.toggle("hidden", isView);
+    if (input) input.classList.toggle("hidden", isView);
     if (viewBody) {
-      viewBody.hidden = !isView;
+      viewBody.classList.toggle("hidden", !isView);
       if (isView) viewBody.textContent = text || "";
     }
-    if (foot) foot.hidden = isView; // 只读时无「清除/完成」
+    if (foot) foot.classList.toggle("hidden", isView); // 只读时无「清除/完成」
 
     modal.classList.remove("hidden");
     if (!isView && input) input.focus();

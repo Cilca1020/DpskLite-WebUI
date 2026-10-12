@@ -104,9 +104,14 @@ function addMsgEl(role, text, markdown = true, msgIndex = null, files = null, an
   }
   // 保存原始 markdown 源，供"复制为 Markdown"使用
   div._rawText = text || "";
-  // 文件卡片（仅用户消息携带文件时存在）：渲染在气泡上方
-  if (role === "user" && files && files.length) {
-    row.appendChild(buildFileCardsEl(files));
+  // 文件卡片 / 注释卡片（仅用户消息）：渲染在气泡上方；两者并存时注释卡片始终在最右
+  if (role === "user") {
+    const hasNote = annotation && String(annotation).trim();
+    if ((files && files.length) || hasNote) {
+      const cards = buildFileCardsEl(files || []);
+      if (hasNote) cards.appendChild(buildNoteCardEl(annotation));
+      row.appendChild(cards);
+    }
   }
   // 消息工具条：常驻显示在气泡外右下方（不依赖 hover，便于移动端）
   let bar = null;
@@ -169,18 +174,6 @@ function addMsgEl(role, text, markdown = true, msgIndex = null, files = null, an
         }
       };
       bar.appendChild(copyMdBtn);
-    }
-    // 注释查看按钮：仅 user 消息且存在注释时显示；点击弹出只读浮层（注释不进入气泡）
-    if (role === "user" && annotation && String(annotation).trim()) {
-      const noteBtn = document.createElement("button");
-      noteBtn.className = "msg-action note-btn active";
-      noteBtn.title = "查看本轮注释";
-      noteBtn.innerHTML = svgIcon("note");
-      noteBtn.onclick = (e) => {
-        e.stopPropagation();
-        if (window.AnnotationModule) AnnotationModule.openViewer(annotation);
-      };
-      bar.appendChild(noteBtn);
     }
     // 分场按钮：仅 user 消息显示。未打锚点 = 在此分场；已打锚点 = 编辑分场名称
     if (role === "user") {
@@ -464,6 +457,28 @@ function buildFileCardsEl(files) {
     wrap.appendChild(card);
   });
   return wrap;
+}
+
+// 构建"注释卡片"元素：与文件卡片同款，渲染在气泡上方；点击打开只读注释浮层。
+// 作为按钮可聚焦/可点击；与文件并存时由调用方追加到最右。
+function buildNoteCardEl(text) {
+  const card = document.createElement("button");
+  card.type = "button";
+  card.className = "file-card note-card";
+  card.title = "查看本轮注释";
+  const icon = document.createElement("span");
+  icon.className = "file-card-icon";
+  icon.innerHTML = svgIcon("note");
+  const name = document.createElement("span");
+  name.className = "file-card-name";
+  name.textContent = "注释";
+  card.appendChild(icon);
+  card.appendChild(name);
+  card.onclick = (e) => {
+    e.stopPropagation();
+    if (window.AnnotationModule) AnnotationModule.openViewer(text);
+  };
+  return card;
 }
 
 // 在被截断（用户停止生成）的助手气泡上追加灰色提示。幂等：同一气泡不重复添加。

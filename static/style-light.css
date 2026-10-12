@@ -1457,11 +1457,7 @@ body {
   color: var(--accent);
   border-color: var(--accent);
 }
-/* user 消息操作条中的注释查看按钮：有注释时高亮提示 */
-.msg-action.note-btn.active {
-  color: var(--accent);
-  border-color: var(--accent);
-}
+/* （注释查看按钮已改为气泡上方的注释卡片，见 .note-card） */
 
 /* 对话区：chat-wrap 承接 .main 的弹性布局，chat-box 在其内部滚动 */
 .chat-wrap {
@@ -1920,6 +1916,7 @@ html.theme-transition *::after {
 .note-view-body {
   white-space: pre-wrap;
   word-break: break-word;
+  font-size: 14px;
   line-height: 1.6;
   color: var(--text);
 }
@@ -2007,6 +2004,12 @@ html.theme-transition *::after {
 .file-card-name {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text);
 }
+/* 注释卡片：与文件卡片同款，作为可点击按钮渲染在气泡上方（不常亮，仅 hover 反馈） */
+.note-card {
+  cursor: pointer;
+  font-family: inherit;
+}
+.note-card:hover { background: var(--hover); }
 
 /* 滚动容器统一：预留滚动条空间，避免内容被挤压导致右侧元素偏移 */
 .sidebar,
