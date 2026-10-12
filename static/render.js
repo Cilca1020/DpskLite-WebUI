@@ -256,6 +256,26 @@ function promptSceneLabel(msgIndex, current) {
   return name.trim().slice(0, 50);
 }
 
+// 打/删锚点后触发切片自动总结并刷新记忆面板的切片列表。
+// 锚点增删会改变分场边界 → 切片划分随之变化，需重跑一次让切片列表跟上。
+// silent=true（删除锚点调用）时不弹「自动总结未开启」类提示；完成时一律刷新面板。
+function runSliceAutoSummary(silent) {
+  const done = () => { if (window.syncSlicesAfterRun) window.syncSlicesAfterRun(); };
+  const ak = loadApiKey();
+  if (!ak) { done(); return; }
+  fetch("/api/sessions/" + currentSessionId + "/summary-slices-run", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ api_key: ak }),
+  })
+    .then((res) => res.json())
+    .then((j) => {
+      if (j && j.error && !silent) showToast("切片自动总结：" + j.error);
+      done();
+    })
+    .catch(() => done());
+}
+
 // 打 / 改某条 user 消息的场景锚点。existingLabel 传 undefined 表示新打锚点。
 // 就地插入/更新分割线，不整页重绘（避免长对话滚动位置丢失）。
 async function addSceneBreak(row, msgIndex, existingLabel) {
@@ -312,23 +332,7 @@ async function addSceneBreak(row, msgIndex, existingLabel) {
     }
     // 切片自动总结（管理面板开关开启时生效）：打锚点即自动总结前一个切片。
     // 失败一律提示（含开关未开启），成功后刷新面板切片列表。
-    const ak = loadApiKey();
-    if (ak) {
-      fetch("/api/sessions/" + currentSessionId + "/summary-slices-run", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ api_key: ak }),
-      })
-        .then((res) => res.json())
-        .then((j) => {
-          if (j && j.error) {
-            showToast("切片自动总结：" + j.error);
-          } else if (window.syncSlicesAfterRun) {
-            window.syncSlicesAfterRun();
-          }
-        })
-        .catch(() => {});
-    }
+    runSliceAutoSummary(false);
   } catch (_) {
     showToast("分场失败");
   }
@@ -361,6 +365,8 @@ async function removeSceneBreak(msgIndex) {
       }
     }
     showToast("已删除分场");
+    // 删除锚点改变分场边界 → 重跑切片总结并刷新面板切片列表（静默，不弹开关提示）
+    runSliceAutoSummary(true);
   } catch (_) {
     showToast("删除失败");
   }

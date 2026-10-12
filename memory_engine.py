@@ -668,6 +668,10 @@ def run_summary_slices(api_key, username, sid, stored_msgs, slice_rounds=None, f
     # 落袋集合：增量跳过最后的开放尾段；full 连尾段一起总结
     settled = slices if full else slices[:-1]
     if not settled:
+        # 无任何闭合片（如删锚点后只剩开场段）：清理过期切片实体，避免面板留旧片
+        if old_entities:
+            storage.set_session_summary_slices(username, sid, [])
+            sync_slice_vectors(username, sid)
         return {"ok": True, "summary": ""}
     # 前缀对齐：与已存实体逐片比对绝对轮次范围，找出真正新增 / 变化的片
     k = 0
@@ -687,9 +691,11 @@ def run_summary_slices(api_key, username, sid, stored_msgs, slice_rounds=None, f
         keep.append(src)
     pending = settled[k:]
     if not pending:
-        if name_dirty:
+        # 无新增片：仅当场景名变化或切片数量收缩（删锚点使原闭合片并入开放尾段、
+        # 不再作为独立切片存在）时才需要落库，否则直接返回（零 LLM 调用）。
+        if name_dirty or len(keep) != len(old_entities):
             storage.set_session_summary_slices(username, sid, keep)
-            sync_slice_vectors(username, sid)  # 场景名变化同步切片向量
+            sync_slice_vectors(username, sid)  # 场景名 / 切片集合变化同步切片向量
             return {"ok": True, "summary": ""}
         return {"ok": True, "summary": ""}
     # 重建继承池：划分变化后被取代的旧片（edited 者的文本按范围重叠继承）
