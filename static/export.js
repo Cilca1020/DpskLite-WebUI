@@ -136,15 +136,25 @@ function buildPlainText(session) {
   return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
-// 导出为 JSON：完整会话数据
+// 导出为 JSON：完整会话数据（含四层记忆，保证导入导出无损往返）
+// 结构：{ format, version, 元信息, memory（四层记忆）, messages（含分场锚点/思考/附件）}
+// 说明：memory 是整个会话的功能数据核心（世界卡/人物卡/动态事实/剧情摘要含切片/向量记忆设置），
+//       缺少它会导致导入后角色设定与记忆全部丢失；vm 为旧版兼容字段（权威值在 memory.vector）。
 function exportSessionAsJSON(session) {
   const data = {
+    format: "dpsklite-session",
+    version: 2,
     title: session.title,
     model: session.model,
     params: session.params || null,
     created_at: session.created_at,
     updated_at: session.updated_at,
     exported_at: Math.floor(Date.now() / 1000),
+    // 四层记忆：worlds / cards / facts / summary(含 slices) / vector / recent_n
+    memory: session.memory || null,
+    // 旧版（v1）导入入口只认顶层 vm：这里冗余一份，向后兼容更早的导入逻辑
+    vm: (session.memory && session.memory.vector) || session.vm || null,
+    // 消息原样导出：reasoning 思考、files 附件、interrupted、scene_break/scene_label 分场锚点均保留
     messages: (session.messages || []).filter((m) => m.role !== "system"),
   };
   const stamp = formatDateTime(session.created_at).replace(/[-: ]/g, "");

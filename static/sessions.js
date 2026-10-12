@@ -160,7 +160,7 @@ async function refreshSessions() {
     li.onclick = () => openSession(s.id);
     const exportBtn = document.createElement("button");
     exportBtn.className = "item-btn";
-    exportBtn.title = "导出对话（JSON / Markdown）";
+    exportBtn.title = "导出对话（Markdown / 纯文本 / JSON）";
     exportBtn.innerHTML = svgIcon("download");
     exportBtn.onclick = (e) => {
       e.stopPropagation();
@@ -242,7 +242,10 @@ async function newSession() {
   resetChatUI();
 }
 
-// 导入会话：读取用户选择的 JSON 文件（对应导出的 JSON 格式），新建会话并打开
+// 导入会话：读取用户选择的 JSON 文件（对应导出的 JSON 格式），新建会话并打开。
+// 兼容两代格式：
+//   v2（format="dpsklite-session"）：含 memory（世界卡/人物卡/动态事实/剧情摘要含切片/向量记忆）
+//   v1（历史导出）：仅元信息 + messages，无 memory，导入后记忆层为空。
 function onImportClick() {
   const input = document.createElement("input");
   input.type = "file";
@@ -250,17 +253,26 @@ function onImportClick() {
   input.onchange = async () => {
     const file = input.files && input.files[0];
     if (!file) return;
+    let data = null;
     try {
-      const data = JSON.parse(await file.text());
-      if (!data.messages || !Array.isArray(data.messages)) {
-        showToast("导入失败：JSON 缺少 messages 数组");
-        return;
-      }
-      const s = await apiPost("/api/sessions/import", data);
-      await openSession(s.id);
-      showToast("已导入会话「" + s.title + "」");
+      data = JSON.parse(await file.text());
     } catch (_) {
       showToast("导入失败：无法解析 JSON 文件");
+      return;
+    }
+    if (!data || !Array.isArray(data.messages)) {
+      showToast("导入失败：JSON 缺少 messages 数组");
+      return;
+    }
+    try {
+      const s = await apiPost("/api/sessions/import", data);
+      await openSession(s.id);
+      // 提示是否携带记忆数据，让用户明确导入结果
+      const hasMemory = !!(data.memory && (data.memory.worlds?.length || data.memory.cards?.length
+        || data.memory.facts?.length || data.memory.summary));
+      showToast("已导入会话「" + s.title + "」" + (hasMemory ? "（含记忆设定）" : ""));
+    } catch (_) {
+      showToast("导入失败：服务端未能创建会话");
     }
   };
   input.click();
