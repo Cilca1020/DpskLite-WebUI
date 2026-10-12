@@ -90,7 +90,8 @@ def _init_db():
                 files        TEXT,
                 interrupted  INTEGER NOT NULL DEFAULT 0,
                 scene_break  INTEGER NOT NULL DEFAULT 0,
-                scene_label  TEXT
+                scene_label  TEXT,
+                annotation   TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_messages_session_id
                 ON messages(session_id, id);
@@ -119,6 +120,11 @@ def _init_db():
                 print("[migrate] P4: 已移除旧列 sessions.messages（数据由 messages 表承载）")
             except sqlite3.OperationalError as e:  # noqa: BLE001
                 print(f"[migrate] P4: 删除旧列失败（SQLite 版本过低？）: {e}")
+        # 注释列：user 消息可携带一次性提示词（仅当前轮注入，历史仅作展示）。
+        # 必须在 _migrate_messages_fk 之前补齐，否则重建表时 SELECT 会引用不存在的列。
+        msg_columns = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
+        if "annotation" not in msg_columns:
+            conn.execute("ALTER TABLE messages ADD COLUMN annotation TEXT")
         # P4-c：确保 messages.session_id 具备外键 ON DELETE CASCADE（幂等，无外键才重建）
         _migrate_messages_fk(conn)
 
@@ -242,12 +248,13 @@ def _migrate_messages_fk(conn):
             files        TEXT,
             interrupted  INTEGER NOT NULL DEFAULT 0,
             scene_break  INTEGER NOT NULL DEFAULT 0,
-            scene_label  TEXT
+            scene_label  TEXT,
+            annotation   TEXT
         );
         INSERT INTO messages_new(id, session_id, username, role, content, ts,
-            reasoning, files, interrupted, scene_break, scene_label)
+            reasoning, files, interrupted, scene_break, scene_label, annotation)
             SELECT id, session_id, username, role, content, ts,
-            reasoning, files, interrupted, scene_break, scene_label FROM messages;
+            reasoning, files, interrupted, scene_break, scene_label, annotation FROM messages;
         DROP TABLE messages;
         ALTER TABLE messages_new RENAME TO messages;
         CREATE INDEX idx_messages_session_id ON messages(session_id, id);
@@ -594,6 +601,8 @@ def _row_to_msg(r):
         m["scene_break"] = True
     if r["scene_label"] is not None:
         m["scene_label"] = r["scene_label"]
+    if r["annotation"] is not None:
+        m["annotation"] = r["annotation"]
     return m
 
 
@@ -606,8 +615,8 @@ def _insert_message_row(conn, sid, username, m):
     files = m.get("files")
     conn.execute(
         "INSERT INTO messages(session_id, username, role, content, ts, "
-        "reasoning, files, interrupted, scene_break, scene_label) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "reasoning, files, interrupted, scene_break, scene_label, annotation) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             sid, username, str(m.get("role") or ""), m.get("content") or "", ts,
             m.get("reasoning"),
@@ -615,6 +624,7 @@ def _insert_message_row(conn, sid, username, m):
             1 if m.get("interrupted") else 0,
             1 if m.get("scene_break") else 0,
             m.get("scene_label"),
+            m.get("annotation"),
         ),
     )
 
@@ -1491,11 +1501,13 @@ def rename_scene_anchor(username, sid, round_no, label):
 
 
 @_locked
-def append_message(username, sid, role, content, reasoning=None, files=None, interrupted=None):
+def append_message(username, sid, role, content, reasoning=None, files=None, interrupted=None, annotation=None):
     session = get_session(username, sid) or create_session(username)
     message = {"role": role, "content": content, "ts": time.time()}
     if reasoning is not None:
         message["reasoning"] = reasoning
+    if annotation is not None:
+        message["annotation"] = annotation
     if files is not None:
         # 保存 binary 标志：前端据此区分「文本文件(拼内容)」与「二进制附件(base64)」，
         # 否则另一设备/重试时从后端恢复会把二进制文件误当作文本拼接。

@@ -116,6 +116,10 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
             <span>添加文件</span>
           </button>
+          <button id="noteBtn" class="attach-btn note-btn" type="button" title="添加本轮注释（一次性提示词，仅本次发送生效）">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v12l-4 4H4z"/><path d="M16 20v-4h4"/><path d="M8 9h8M8 13h5"/></svg>
+            <span>注释</span>
+          </button>
           <button id="newlineBtn" class="newline-btn" type="button" title="在光标处插入换行（移动端键盘无 Shift 键）">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 10 4 15 9 20"/><path d="M20 4v7a4 4 0 0 1-4 4H4"/></svg>
           </button>
@@ -404,6 +408,29 @@
     </div><!-- /settingsPageMemory -->
   </aside>
 
+  <!-- 注释面板（模态：屏幕居中 + 背景遮罩，与切片管理面板一致）。
+       挂载入口：输入区「注释」按钮（编辑）与消息操作条注释按钮（只读查看）。 -->
+  <div id="noteModal" class="modal-mask hidden">
+    <div class="modal-panel">
+      <div class="modal-head">
+        <span class="modal-title"><span class="btn-ic" id="noteModalIc"></span><span id="noteModalTitle">本轮注释</span></span>
+        <button id="noteModalClose" class="icon-btn" type="button" title="关闭">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <span class="param-hint" id="noteModalHint">仅对本次发送生效的一次性提示词，不会写入历史上下文；发送后仅可查看。</span>
+        <textarea id="noteInput" class="note-input" rows="6"
+                  placeholder="输入仅对本次发送生效的一次性提示词……"></textarea>
+        <div id="noteViewBody" class="note-view-body hidden"></div>
+      </div>
+      <div id="noteModalFoot" class="modal-foot">
+        <button id="noteClearBtn" type="button" class="note-btn-sm">清除</button>
+        <button id="noteDoneBtn" type="button" class="note-btn-sm primary">完成</button>
+      </div>
+    </div>
+  </div>
+
   <!-- 切片管理面板（模态：屏幕居中 + 背景遮罩；显式点 ✕ 关闭，无自动关闭/动画） -->
   <div id="memorySliceModal" class="modal-mask hidden">
     <div class="modal-panel">
@@ -441,6 +468,7 @@
         "/static/vendor/highlight.min.js",
         "/static/file_reader.js",
         "/static/icons.js",
+        "/static/annotation.js",
         "/static/api.js",
         "/static/render.js",
         "/static/sessions.js",

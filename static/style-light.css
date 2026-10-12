@@ -1457,6 +1457,11 @@ body {
   color: var(--accent);
   border-color: var(--accent);
 }
+/* user 消息操作条中的注释查看按钮：有注释时高亮提示 */
+.msg-action.note-btn.active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
 
 /* 对话区：chat-wrap 承接 .main 的弹性布局，chat-box 在其内部滚动 */
 .chat-wrap {
@@ -1889,6 +1894,55 @@ html.theme-transition *::after {
   font-size: 16px; line-height: 1; cursor: pointer; padding: 0 2px; border-radius: 4px;
 }
 .file-chip-del:hover { background: var(--hover); color: var(--text); }
+/* 注释按钮：与「添加文件」同款；非空或面板展开时高亮 */
+.note-btn.active { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+/* 注释按钮高亮态（有注释或面板展开）：见上 .note-btn.active */
+/* 注释面板（模态，与切片管理面板同款结构）内的编辑/只读区域 */
+.note-input {
+  width: 100%;
+  resize: vertical;
+  min-height: 120px;
+  max-height: 50vh;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border: 1px solid var(--input-border, var(--border));
+  border-radius: 8px;
+  background: var(--field-bg, var(--bg));
+  color: var(--field-text, var(--text));
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+}
+/* 注释面板说明文字：与全局 param-hint 同字号（覆盖模态内 12px） */
+#noteModalHint { font-size: 11px; }
+.note-input:focus { outline: none; border-color: var(--accent); }
+/* 只读查看正文 */
+.note-view-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.6;
+  color: var(--text);
+}
+/* 模态底部操作行（清除 / 完成） */
+.modal-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+}
+.modal-foot.hidden { display: none; }
+.note-btn-sm {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 5px 14px;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+.note-btn-sm:hover { background: var(--hover); border-color: var(--accent); }
+.note-btn-sm.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg, #fff); }
 /* 输入框 + 发送按钮一行 */
 .input-row {
   display: flex;

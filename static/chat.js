@@ -2,6 +2,13 @@
 
 // 当前流式请求的中止控制器（供「停止生成」按钮使用）；null 表示无进行中的生成
 let activeAbortController = null;
+// 用户气泡的兜底文案：无正文时按携带内容给出提示（仅注释 / 已发送文件）
+function userBubbleText(text, files, annotation) {
+  if (text) return text;
+  if (files && files.length) return "（已发送文件）";
+  if (annotation && String(annotation).trim()) return "（仅注释）";
+  return text || "";
+}
 // 是否正在生成：生成期间忽略重复发送（防止 Enter 键并发触发第二个请求）
 let isGenerating = false;
 
@@ -315,11 +322,12 @@ function liveFlush(st) {
 
 // 创建一次流式请求的状态对象。payload 在发起时（当前会话上下文下）构建并固化，
 // 避免切换会话后读到其它会话的 model / 参数 / 上下文。
-function createLiveStream({ sid, userText, files, writeUser, saveHistory, msgIndex, payload }) {
+function createLiveStream({ sid, userText, files, annotation, writeUser, saveHistory, msgIndex, payload }) {
   return {
     sid,
     userText: userText || "",
     files: files || null,
+    annotation: annotation || null,
     writeUser,
     saveHistory,
     msgIndex,
@@ -360,9 +368,9 @@ function mountLiveStream(st) {
   hideEmptyHint(box);
   // 恢复本轮的 user 气泡（尚未写入后端历史）
   lastUserMsgIndex = sessionTotal;
-  addMsgEl("user", st.userText || "（已发送文件）", false, sessionTotal,
-    st.files && st.files.length ? st.files : null, null, false);
-  conversation.push({ role: "user", content: st.userText, files: st.files && st.files.length ? st.files : null });
+  addMsgEl("user", userBubbleText(st.userText, st.files, st.annotation), false, sessionTotal,
+    st.files && st.files.length ? st.files : null, null, false, null, st.annotation || null);
+  conversation.push({ role: "user", content: st.userText, files: st.files && st.files.length ? st.files : null, annotation: st.annotation || null });
   sessionTotal++;
   // 恢复 assistant 流式气泡
   lastAssistantMsgIndex = sessionTotal;
@@ -410,12 +418,20 @@ function buildChatPayload(sid) {
     model: $("#modelSelect").value,
     // 把用户消息携带的文本文件内容拼接到对应 user 的 content 中，
     // 使模型能看到文件内容（files 本身不作为独立消息）
-    messages: conversation
+    messages: (() => {
       // 过滤空内容的助手消息（被停止时保存的空消息），避免污染模型上下文
-      .filter((m) => !(m.role === "assistant" && !(m.content || "").trim()))
-      .map((m) => {
+      const list = conversation.filter(
+        (m) => !(m.role === "assistant" && !(m.content || "").trim())
+      );
+      // 注释只注入「当前轮」= 最后一条 user 消息；历史轮次的注释仅作展示，不进入上下文
+      let lastUserIdx = -1;
+      for (let i = list.length - 1; i >= 0; i--) {
+        if (list[i].role === "user") { lastUserIdx = i; break; }
+      }
+      return list.map((m, i) => {
+        let content = m.content || "";
         if (m.role === "user" && m.files && m.files.length) {
-          const appended = m.files
+          content += m.files
             .map((f) => {
               if (f.binary) {
                 // 二进制办公文档：以 base64 附件形式标注（文本模型仅能识别为附件）
@@ -424,10 +440,13 @@ function buildChatPayload(sid) {
               return `\n\n--- 文件内容：${f.name} ---\n${f.content}`;
             })
             .join("");
-          return { role: "user", content: (m.content || "") + appended };
         }
-        return { role: m.role, content: m.content };
-      }),
+        if (m.role === "user" && i === lastUserIdx && m.annotation && m.annotation.trim()) {
+          content += `\n\n--- 本轮临时指令（仅本次生效，不写入历史）---\n${m.annotation}`;
+        }
+        return { role: m.role, content };
+      });
+    })(),
     ...readParamsFromUI(),
     // 向量记忆：仅由「启用向量记忆」开关控制；关闭时不传 recent_n，后端忽略 N
     // 后端负责「最近 N 轮 + 向量检索 Top-K」拼接（轮次 ≤ N 时全部添加，token 过多砍最早）
@@ -504,6 +523,7 @@ async function runLiveStream(st) {
         role: "user",
         content: st.userText,
         files: st.files && st.files.length ? st.files : undefined,
+        annotation: st.annotation || undefined,
       });
     }
     // 保存助手消息：被停止且无输出时也保存空消息并标记 interrupted，
@@ -581,6 +601,8 @@ async function editMessage(index) {
     const originalFiles = chat[index].files || [];
     if (originalFiles.length) FileReaderModule.addFilesFromData(originalFiles);
   }
+  // 恢复原注释到输入区（若有），可在发送前再次编辑——已发出的注释本身不可改
+  if (window.AnnotationModule) AnnotationModule.restore(chat[index].annotation || "");
   input.focus();
 }
 
@@ -633,11 +655,12 @@ async function retryFrom(msgIndex) {
   const s = await apiGet("/api/sessions/" + currentSessionId);
   conversation = s.messages
     .filter((m) => m.role !== "system")
-    .map((m) => ({ role: m.role, content: m.content, files: m.files || null }));
+    .map((m) => ({ role: m.role, content: m.content, files: m.files || null, annotation: m.annotation || null }));
   // 该助手消息对应的用户提问在 conversation 中位于 msgIndex-1
-  const userMsg = conversation[msgIndex - 1] || { content: "", files: null };
+  const userMsg = conversation[msgIndex - 1] || { content: "", files: null, annotation: null };
   const userText = userMsg.content || "";
   const userFiles = userMsg.files || null;
+  const userAnnotation = userMsg.annotation || null;
   // 重新渲染会话（此时尾部已被删掉）
   await openSession(currentSessionId);
   // 删除后剩余的"最后一条助手消息"只是暂时的，马上会被新回答取代，
@@ -651,6 +674,7 @@ async function retryFrom(msgIndex) {
     sid,
     userText,
     files: userFiles,
+    annotation: userAnnotation,
     writeUser: false,
     saveHistory: true,
     msgIndex,
@@ -698,7 +722,7 @@ function dismissKeyboard() {
 
 // 向量记忆不可用：toast 提示 + 停止回复 + 把用户发送的内容返回输入框，
 // 并撤销乐观渲染的用户气泡与助手占位（不静默忽略）
-function handleVmFailure(e, text, files) {
+function handleVmFailure(e, text, files, annotation) {
   showToast((e.message || "向量记忆不可用") + "，已停止回复，内容已退回输入框");
   const input = $("#userInput");
   input.value = text || "";
@@ -706,6 +730,7 @@ function handleVmFailure(e, text, files) {
     FileReaderModule.clearPendingFiles();
     if (files && files.length) FileReaderModule.addFilesFromData(files);
   }
+  if (window.AnnotationModule) AnnotationModule.setPending(annotation || "");
   input.focus();
   // 撤销乐观渲染：移除刚追加的最后两条消息行（user 气泡 + assistant 占位）
   const box = $("#chatBox");
@@ -726,9 +751,10 @@ async function sendMessage() {
   if (isGenerating) return; // 生成期间忽略重复发送（防止 Enter 键并发触发）
   const input = $("#userInput");
   const text = input.value.trim();
-  // 文本与文件至少有一种；都为空则忽略
+  // 文本 / 文件 / 注释至少有一种；都为则忽略
   const files = window.FileReaderModule ? FileReaderModule.getPendingFiles() : [];
-  if (!text && files.length === 0) return;
+  const annotation = window.AnnotationModule ? AnnotationModule.getPending().trim() : "";
+  if (!text && files.length === 0 && !annotation) return;
 
   const apiKey = loadApiKey();
   if (!apiKey) {
@@ -749,14 +775,15 @@ async function sendMessage() {
   // 用户消息强制纯文本：输入中若含 Markdown 语法则按原样显示，不渲染
   const userIdx = sessionTotal; // 新消息的全局下标 = 当前会话消息总数
   lastUserMsgIndex = userIdx; // 最新一轮，显示编辑按钮（渲染前先设置）
-  addMsgEl("user", text || "（已发送文件）", false, userIdx, files);
+  addMsgEl("user", userBubbleText(text, files, annotation), false, userIdx, files, null, true, null, annotation || null);
   input.value = "";
   dismissKeyboard(); // 移动端发送后自动收起虚拟键盘
-  conversation.push({ role: "user", content: text, files: files.length ? files : null });
+  conversation.push({ role: "user", content: text, files: files.length ? files : null, annotation: annotation || null });
   sessionTotal++; // user 消息已追加
 
-  // 发送后立即清空输入框上方的待发送文件卡片（不等输出完成）
+  // 发送后立即清空输入框上方的待发送文件卡片与注释（不等输出完成）
   if (window.FileReaderModule) FileReaderModule.clearPendingFiles();
+  if (window.AnnotationModule) { AnnotationModule.clearPending(); AnnotationModule.closePanel(); }
 
   // 以发起时捕获的会话 id 与固化的 payload 创建流式请求（writeUser=true：首次发送需写 user）
   const sendBtn = $("#sendBtn");
@@ -766,6 +793,7 @@ async function sendMessage() {
     sid,
     userText: text,
     files,
+    annotation,
     writeUser: true,
     saveHistory: true,
     msgIndex: sessionTotal,
@@ -787,7 +815,7 @@ async function sendMessage() {
     exitGeneratingState();
     if (e && e.body && e.body.vector_memory_error) {
       // 向量记忆不可用：提示并停止回复，把内容退回输入框，撤销刚渲染的气泡
-      handleVmFailure(e, text, files);
+      handleVmFailure(e, text, files, annotation);
     } else if (st.mounted) {
       st.assistantEl.textContent = "[错误] " + e.message;
     }

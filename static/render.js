@@ -89,7 +89,7 @@ function hideEmptyHint(box) {
 // anchorEl：非 null 时把消息行插入到该元素之前（加载更早消息用），否则追加到末尾；
 // autoScroll：插入后是否自动滚动到底部（加载更早消息时应关闭，保持视口位置）。
 // scene：非 null 表示该 user 消息带场景锚点（{label}），在气泡行之前渲染分场分割线。
-function addMsgEl(role, text, markdown = true, msgIndex = null, files = null, anchorEl = null, autoScroll = true, scene = null) {
+function addMsgEl(role, text, markdown = true, msgIndex = null, files = null, anchorEl = null, autoScroll = true, scene = null, annotation = null) {
   const box = $("#chatBox");
   // 每行容器：包裹气泡 + 气泡外的操作条
   const row = document.createElement("div");
@@ -169,6 +169,18 @@ function addMsgEl(role, text, markdown = true, msgIndex = null, files = null, an
         }
       };
       bar.appendChild(copyMdBtn);
+    }
+    // 注释查看按钮：仅 user 消息且存在注释时显示；点击弹出只读浮层（注释不进入气泡）
+    if (role === "user" && annotation && String(annotation).trim()) {
+      const noteBtn = document.createElement("button");
+      noteBtn.className = "msg-action note-btn active";
+      noteBtn.title = "查看本轮注释";
+      noteBtn.innerHTML = svgIcon("note");
+      noteBtn.onclick = (e) => {
+        e.stopPropagation();
+        if (window.AnnotationModule) AnnotationModule.openViewer(annotation);
+      };
+      bar.appendChild(noteBtn);
     }
     // 分场按钮：仅 user 消息显示。未打锚点 = 在此分场；已打锚点 = 编辑分场名称
     if (role === "user") {

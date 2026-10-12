@@ -125,6 +125,7 @@ function buildPlainText(session) {
       if (reasoningText) {
         lines.push("（思考过程）");
         lines.push(reasoningText);
+        lines.push(""); // 思考过程与正文之间留空行（与 Markdown 导出一致）
       }
     }
     lines.push(cleanExportText(m.content) || "（无内容）");

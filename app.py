@@ -1208,10 +1208,12 @@ def api_append_msg(sid):
     reasoning = data.get("reasoning")
     files = data.get("files")
     interrupted = data.get("interrupted")
+    annotation = data.get("annotation")
     if role not in ("user", "assistant"):
         return jsonify({"error": "role 必须为 user 或 assistant"}), 400
     saved_session = storage.append_message(
-        session["username"], sid, role, content, reasoning=reasoning, files=files, interrupted=interrupted
+        session["username"], sid, role, content, reasoning=reasoning, files=files,
+        interrupted=interrupted, annotation=annotation
     )
     return jsonify(saved_session)
 

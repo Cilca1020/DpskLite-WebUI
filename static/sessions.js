@@ -294,7 +294,7 @@ async function openSession(id, opts = {}) {
   if (window.loadMemoryPanel) window.loadMemoryPanel();
   // content 始终是纯回答，直接用于模型上下文；reasoning 仅渲染；files 仅 user 消息携带。
   // 上下文仅包含已加载的消息，上滑加载更早消息后自动扩充。
-  conversation = (s.messages || []).map((m) => ({ role: m.role, content: m.content, files: m.files || null }));
+  conversation = (s.messages || []).map((m) => ({ role: m.role, content: m.content, files: m.files || null, annotation: m.annotation || null }));
   const box = $("#chatBox");
   box.innerHTML = "";
   // 分页状态：本次返回的是最新一段消息（全局下标最大的一段）
@@ -324,7 +324,7 @@ async function openSession(id, opts = {}) {
     } else {
       // 用户消息强制纯文本：Markdown 语法按原样显示，不渲染
       addMsgEl(m.role, m.content, false, m.index, m.files || null, null, true,
-        m.scene_break ? { label: m.scene_label || "" } : null);
+        m.scene_break ? { label: m.scene_label || "" } : null, m.annotation || null);
     }
   });
   // 渲染完成后滚动到最底部
@@ -361,11 +361,11 @@ async function loadOlderMessages() {
         renderAssistant(m.content, m.reasoning || null, m.index, !!m.interrupted, firstRow, false);
       } else {
         addMsgEl(m.role, m.content, false, m.index, m.files || null, firstRow, false,
-          m.scene_break ? { label: m.scene_label || "" } : null);
+          m.scene_break ? { label: m.scene_label || "" } : null, m.annotation || null);
       }
     });
     // 扩充模型上下文与分页状态
-    conversation = msgs.map((m) => ({ role: m.role, content: m.content, files: m.files || null })).concat(conversation);
+    conversation = msgs.map((m) => ({ role: m.role, content: m.content, files: m.files || null, annotation: m.annotation || null })).concat(conversation);
     sessionHasMore = !!s.has_more;
     sessionMinIndex = msgs[0].index;
     // 更早分页中的场景锚点并入登记（保持升序，供分场默认命名计数）
